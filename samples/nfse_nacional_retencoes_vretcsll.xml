@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<NFSe>
+  <infNFSe Id="NFSN-RET-001">
+    <nNFSe>9001</nNFSe>
+    <dhEmi>2026-02-10T09:00:00-03:00</dhEmi>
+    <DPS>
+      <infDPS>
+        <dhEmi>2026-02-10T09:00:00-03:00</dhEmi>
+        <prest>
+          <CNPJ>11111111000191</CNPJ>
+          <xNome>Cliente Prestador LTDA</xNome>
+        </prest>
+        <toma>
+          <CNPJ>22222222000182</CNPJ>
+          <xNome>Empresa Tomadora SA</xNome>
+        </toma>
+        <serv>
+          <cServ>17.01</cServ>
+          <xDescServ>Consultoria tributária.</xDescServ>
+        </serv>
+        <valores>
+          <vServ>10000.00</vServ>
+          <vBC>10000.00</vBC>
+          <trib>
+            <tribMun>
+              <vISSQN>500.00</vISSQN>
+              <tpRetISSQN>2</tpRetISSQN>
+              <pAliq>5.00</pAliq>
+            </tribMun>
+            <tribFed>
+              <piscofins>
+                <vPIS>165.00</vPIS>
+                <vCOFINS>760.00</vCOFINS>
+                <tpRetPisCofins>3</tpRetPisCofins>
+                <vRetCSLL>465.00</vRetCSLL>
+              </piscofins>
+              <vRetIRRF>150.00</vRetIRRF>
+            </tribFed>
+          </trib>
+        </valores>
+      </infDPS>
+    </DPS>
+  </infNFSe>
+</NFSe>

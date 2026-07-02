@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CompNfse>
+  <Nfse>
+    <InfNfse Id="NFS-001">
+      <Numero>1001</Numero>
+      <CodigoVerificacao>ABC123</CodigoVerificacao>
+      <DataEmissao>2026-06-10T10:30:00</DataEmissao>
+      <Competencia>2026-06-01</Competencia>
+      <Servico>
+        <Valores>
+          <ValorServicos>10000.00</ValorServicos>
+          <ValorDeducoes>0.00</ValorDeducoes>
+          <ValorPis>65.00</ValorPis>
+          <ValorCofins>300.00</ValorCofins>
+          <ValorInss>0.00</ValorInss>
+          <ValorIr>150.00</ValorIr>
+          <ValorCsll>100.00</ValorCsll>
+          <OutrasRetencoes>0.00</OutrasRetencoes>
+          <ValorIss>500.00</ValorIss>
+          <ValorIssRetido>500.00</ValorIssRetido>
+          <BaseCalculo>10000.00</BaseCalculo>
+          <Aliquota>0.05</Aliquota>
+          <ValorLiquidoNfse>8885.00</ValorLiquidoNfse>
+        </Valores>
+        <IssRetido>1</IssRetido>
+        <ItemListaServico>17.01</ItemListaServico>
+        <CodigoTributacaoMunicipio>1701</CodigoTributacaoMunicipio>
+        <Discriminacao>Serviços contábeis e consultoria fiscal.</Discriminacao>
+        <CodigoMunicipio>3205309</CodigoMunicipio>
+      </Servico>
+      <PrestadorServico>
+        <IdentificacaoPrestador>
+          <Cnpj>11111111000191</Cnpj>
+          <InscricaoMunicipal>12345</InscricaoMunicipal>
+        </IdentificacaoPrestador>
+        <RazaoSocial>Cliente Prestador LTDA</RazaoSocial>
+      </PrestadorServico>
+      <TomadorServico>
+        <IdentificacaoTomador>
+          <CpfCnpj><Cnpj>22222222000182</Cnpj></CpfCnpj>
+        </IdentificacaoTomador>
+        <RazaoSocial>Empresa Tomadora SA</RazaoSocial>
+      </TomadorServico>
+    </InfNfse>
+  </Nfse>
+</CompNfse>

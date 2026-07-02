@@ -1,0 +1,30 @@
+# Dados fiscais e certificados: NUNCA subir para GitHub
+data/
+certificados/
+certs/
+*.pfx
+*.p12
+*.pem
+*.key
+*.crt
+*.cer
+.env
+
+# Bancos locais antigos ou acidentais
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Sistema/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

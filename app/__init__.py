@@ -1,0 +1,1 @@
+"""ORA NFS-e Automático."""
