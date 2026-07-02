@@ -31,7 +31,7 @@ Cada pessoa baixa o projeto e roda localmente:
 ```powershell
 git clone https://github.com/SEU_USUARIO/ora-nfse-automatico.git
 cd ora-nfse-automatico
-.\iniciar_windows.bat
+.\iniciar_github_pages_windows.bat
 ```
 
 Se a ideia for várias pessoas usando a mesma base de dados, rode o sistema em um computador/servidor interno usando `iniciar_windows_rede.bat` e dê acesso pelo IP da rede local.
@@ -45,3 +45,23 @@ Nunca suba para o GitHub:
 - `.pfx` ou `.p12`
 - XMLs reais
 - prints contendo senhas, tokens ou dados sensíveis
+
+
+## GitHub Pages como interface
+
+A v11 inclui um `index.html` na raiz do projeto. Se o GitHub Pages estiver configurado como **main / root**, o link público deixará de renderizar o README e passará a abrir uma tela de sistema.
+
+Essa tela faz a ponte com o agente local:
+
+```text
+https://SEU_USUARIO.github.io/ora-nfse-automatico/  -> interface pública
+http://127.0.0.1:8000                               -> agente local FastAPI
+```
+
+Para abrir já no fluxo correto, use:
+
+```powershell
+.\iniciar_github_pages_windows.bat
+```
+
+O GitHub Pages não substitui o backend. Ele apenas entrega a interface/launcher. A busca de NFS-e, leitura de certificado, XMLs, relatórios e conferência Excel continuam no computador do usuário.

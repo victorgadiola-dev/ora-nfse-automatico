@@ -1,6 +1,75 @@
 # ORA NFS-e Automático
 
+> v12 — GitHub Pages corrigido para abrir a interface do sistema.
+
+Atenção: para o GitHub Pages abrir a interface, o arquivo `index.html` precisa estar na raiz do repositório publicado. Consulte `PUBLICAR_GITHUB_PAGES.md`.
+
 Sistema local para buscar NFS-e no ADN/NFS-e Nacional, organizar documentos por empresa e gerar conferência de notas **prestadas** e **tomadas** com retenções segregadas por tributo.
+
+## Novidades da v11 — GitHub Pages com agente local
+
+Esta versão ajusta o projeto para que o link do GitHub Pages deixe de mostrar apenas o README e passe a exibir uma **interface de acesso ao sistema**.
+
+Importante: o GitHub Pages não executa Python, não acessa certificado A1 e não grava XMLs ou arquivos locais. Por isso, a arquitetura correta para operar **sem Render** é:
+
+```text
+GitHub Pages = interface pública / porta de entrada
+Agente local = processamento fiscal em http://127.0.0.1:8000
+```
+
+Com isso, o usuário acessa o link público do GitHub Pages, mas as funcionalidades completas continuam sendo executadas localmente:
+
+- consulta NFS-e Nacional/ADN;
+- uso de certificado A1;
+- armazenamento local de XMLs;
+- relatórios;
+- retenções segregadas;
+- importação e conferência Excel;
+- logs e histórico operacional.
+
+### Como usar com o link do GitHub Pages
+
+Depois de enviar esta versão para o GitHub, o link:
+
+```text
+https://victorgadiola-dev.github.io/ora-nfse-automatico/
+```
+
+passará a abrir a nova interface `index.html`, e não mais a página simples do README.
+
+Para operar:
+
+1. Clone ou baixe o repositório no computador do usuário.
+2. Execute:
+
+```powershell
+.\iniciar_github_pages_windows.bat
+```
+
+3. A janela do agente local deve permanecer aberta.
+4. Volte para o link do GitHub Pages.
+5. Quando o agente responder em `127.0.0.1:8000`, a página carrega o sistema completo.
+
+### Ajuste se mudar usuário ou repositório
+
+Se o repositório for publicado em outro usuário do GitHub, edite o `.env`:
+
+```env
+GITHUB_PAGES_URL=https://SEU_USUARIO.github.io/ora-nfse-automatico/
+PAGES_ALLOWED_ORIGINS=https://SEU_USUARIO.github.io,http://127.0.0.1:8000,http://localhost:8000
+```
+
+### Segurança
+
+O GitHub continua recebendo somente o código e a interface. Não suba:
+
+- `data/`;
+- certificados `.pfx`, `.p12`, `.pem` ou `.key`;
+- XMLs reais;
+- `.env`;
+- bancos locais;
+- planilhas com dados fiscais reais.
+
 
 ## Novidades da v10 — interface com cara de sistema
 

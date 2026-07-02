@@ -13,6 +13,7 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook
@@ -29,9 +30,29 @@ from app.store import JsonStore, store, utc_now_iso
 
 app = FastAPI(
     title="ORA NFS-e Automático",
-    version="0.10.0",
-    description="Busca automática de NFS-e no ADN/NFS-e Nacional, sem banco de dados, com painel ORA, relatórios por competência/emissão, conferência de Excel importado e interface em padrão de sistema operacional.",
+    version="0.11.0",
+    description="Busca automática de NFS-e no ADN/NFS-e Nacional, sem banco de dados, com painel ORA, relatórios, conferência Excel e modo GitHub Pages + agente local.",
 )
+
+# GitHub Pages pode hospedar somente a interface estática.
+# As operações fiscais continuam no agente local em 127.0.0.1, onde ficam certificados,
+# XMLs e arquivos de dados. Restrinja as origens pelo .env quando publicar em outro usuário.
+_allowed_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "PAGES_ALLOWED_ORIGINS",
+        "https://victorgadiola-dev.github.io,http://127.0.0.1:8000,http://localhost:8000",
+    ).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -995,7 +1016,17 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "app": "ORA NFS-e Automático",
+        "version": "0.11.0",
+        "mode": "local-agent",
+    }
+
+
+@app.get("/api/health")
+def api_health() -> dict[str, str]:
+    return health()
 
 
 
