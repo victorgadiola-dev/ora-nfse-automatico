@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: ora-nfse-automatico
+    runtime: python
+    plan: starter
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    disk:
+      name: ora-nfse-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: APP_ENV
+        value: render
+      - key: DATA_DIR
+        value: /opt/render/project/src/data
+      - key: REQUIRE_AUTH
+        value: "true"
+      - key: SECURE_COOKIES
+        value: "true"
+      - key: APP_ACCESS_PASSWORD
+        sync: false
+      - key: APP_SESSION_SECRET
+        generateValue: true
+      - key: NFSE_ADN_BASE_URL
+        value: https://adn.nfse.gov.br/contribuintes
+      - key: REQUEST_TIMEOUT_SECONDS
+        value: "60"
+      - key: REQUEST_DELAY_SECONDS
+        value: "0.4"
+      - key: RATE_LIMIT_PAUSE_SECONDS
+        value: "45"
+      - key: RATE_LIMIT_MAX_PAUSE_SECONDS
+        value: "300"
+      - key: MAX_RATE_LIMIT_RETRIES
+        value: "3"
+      - key: DEFAULT_MAX_CONSULTAS
+        value: "500"
+      - key: DEFAULT_STOP_AFTER_EMPTY
+        value: "3"

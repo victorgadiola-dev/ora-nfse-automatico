@@ -1,0 +1,25 @@
+# Opção de demonstração sem disco persistente.
+# Use somente para teste visual/funcional. Em redeploy/restart, dados, XMLs e certificados podem ser perdidos.
+services:
+  - type: web
+    name: ora-nfse-automatico-demo
+    runtime: python
+    plan: free
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: APP_ENV
+        value: render
+      - key: DATA_DIR
+        value: ./data
+      - key: REQUIRE_AUTH
+        value: "true"
+      - key: SECURE_COOKIES
+        value: "true"
+      - key: APP_ACCESS_PASSWORD
+        sync: false
+      - key: APP_SESSION_SECRET
+        generateValue: true

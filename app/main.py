@@ -2,17 +2,20 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
+import hashlib
+import hmac
 import os
 import re
+import secrets as py_secrets
 import time
 from decimal import Decimal
 from html import escape, unescape
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,18 +33,17 @@ from app.store import JsonStore, store, utc_now_iso
 
 app = FastAPI(
     title="ORA NFS-e Automático",
-    version="0.11.0",
-    description="Busca automática de NFS-e no ADN/NFS-e Nacional, sem banco de dados, com painel ORA, relatórios, conferência Excel e modo GitHub Pages + agente local.",
+    version="0.14.0",
+    description="Busca automática de NFS-e no ADN/NFS-e Nacional, com painel ORA, relatórios, conferência Excel, autenticação de acesso e deploy preparado para Render.",
 )
 
-# GitHub Pages pode hospedar somente a interface estática.
-# As operações fiscais continuam no agente local em 127.0.0.1, onde ficam certificados,
-# XMLs e arquivos de dados. Restrinja as origens pelo .env quando publicar em outro usuário.
+# CORS fica restrito por padrão. Em Render, a interface e a API rodam no mesmo domínio.
+# Use ALLOWED_ORIGINS somente quando houver um front-end separado consumindo a API.
 _allowed_origins = [
     origin.strip()
     for origin in os.getenv(
-        "PAGES_ALLOWED_ORIGINS",
-        "https://victorgadiola-dev.github.io,http://127.0.0.1:8000,http://localhost:8000",
+        "ALLOWED_ORIGINS",
+        "http://127.0.0.1:8000,http://localhost:8000",
     ).split(",")
     if origin.strip()
 ]
@@ -55,7 +57,224 @@ app.add_middleware(
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+# ---------------------------------------------------------------------------
+# Segurança para URL pública no Render
+# ---------------------------------------------------------------------------
+
+PUBLIC_PATHS = {"/health", "/api/health", "/login", "/logout", "/favicon.ico"}
+
+
+def is_render_runtime() -> bool:
+    settings = get_settings()
+    return settings.app_env.lower() == "render" or bool(os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID"))
+
+
+def is_auth_required() -> bool:
+    settings = get_settings()
+    return bool(settings.require_auth or settings.app_access_password)
+
+
+def _session_secret() -> bytes:
+    settings = get_settings()
+    if settings.app_session_secret:
+        return settings.app_session_secret.encode("utf-8")
+    # Fallback para desenvolvimento local: usa a chave persistida do próprio sistema.
+    return get_or_create_secret_key()
+
+
+def _make_session_token() -> str:
+    settings = get_settings()
+    issued_at = int(time.time())
+    nonce = py_secrets.token_urlsafe(12)
+    payload = f"{issued_at}:{nonce}"
+    signature = hmac.new(_session_secret(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}:{signature}"
+
+
+def _valid_session_token(token: str | None) -> bool:
+    if not token:
+        return False
+    try:
+        issued_at_raw, nonce, signature = token.split(":", 2)
+        issued_at = int(issued_at_raw)
+    except (TypeError, ValueError):
+        return False
+    payload = f"{issued_at}:{nonce}"
+    expected = hmac.new(_session_secret(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return False
+    max_age = int(get_settings().session_max_age_seconds)
+    return (time.time() - issued_at) <= max_age
+
+
+def _safe_next_url(value: str | None) -> str:
+    if not value or not value.startswith("/") or value.startswith("//"):
+        return "/"
+    return value
+
+
+def render_login_page(next_url: str = "/", error: str = "", setup_missing: bool = False) -> str:
+    error_html = f"<div class='login-alert'>{escape(error)}</div>" if error else ""
+    setup_html = ""
+    password_field = """
+      <label>Senha de acesso</label>
+      <input type="password" name="password" autocomplete="current-password" required autofocus>
+      <button type="submit">Entrar no sistema</button>
+    """
+    if setup_missing:
+        password_field = """
+          <div class="setup-box">
+            <strong>Senha não configurada no Render</strong>
+            <span>Defina a variável APP_ACCESS_PASSWORD em Environment e faça novo deploy. Para produção, mantenha REQUIRE_AUTH=true.</span>
+          </div>
+        """
+        setup_html = "<p class='hint'>O sistema está protegido contra abertura pública sem senha.</p>"
+    return f"""
+    <!doctype html>
+    <html lang="pt-BR">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Acesso · ORA NFS-e</title>
+        <link rel="icon" href="/static/favicon.png">
+        <style>
+          :root {{
+            --navy:#011E41; --blue:#0082CB; --copper:#AC441E; --sand:#C4BEB6; --off:#F7F5F1;
+            --ink:#0d1726; --muted:#637083; --line:rgba(1,30,65,.14);
+          }}
+          * {{ box-sizing:border-box; }}
+          body {{
+            margin:0; min-height:100vh; font-family:Gibbs, Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+            background: radial-gradient(circle at 16% 12%, rgba(0,130,203,.28), transparent 34%),
+                        linear-gradient(135deg, var(--navy), #071222 68%, #101820);
+            color:var(--ink); display:grid; place-items:center; padding:28px;
+          }}
+          .login-shell {{
+            width:min(960px, 100%); display:grid; grid-template-columns:1.05fr .95fr; background:rgba(255,255,255,.96);
+            border:1px solid rgba(255,255,255,.22); border-radius:28px; overflow:hidden; box-shadow:0 28px 70px rgba(0,0,0,.28);
+          }}
+          .brand-panel {{
+            position:relative; padding:42px; color:#fff; background:linear-gradient(180deg, #011E41, #061a35);
+            overflow:hidden;
+          }}
+          .brand-panel::after {{
+            content:""; position:absolute; inset:auto -120px -120px auto; width:310px; height:310px; border-radius:44%;
+            background:rgba(0,130,203,.28); border:1px solid rgba(255,255,255,.12); transform:rotate(18deg);
+          }}
+          .brand-panel img {{ width:142px; height:auto; margin-bottom:64px; position:relative; z-index:1; }}
+          .brand-panel h1 {{ position:relative; z-index:1; font-weight:300; font-size:44px; line-height:.98; letter-spacing:-.04em; margin:0 0 18px; }}
+          .brand-panel p {{ position:relative; z-index:1; color:rgba(255,255,255,.72); line-height:1.6; max-width:420px; margin:0; }}
+          .access-panel {{ padding:42px; align-self:center; }}
+          .eyebrow {{ display:block; color:var(--blue); text-transform:uppercase; font-size:12px; font-weight:800; letter-spacing:.12em; margin-bottom:14px; }}
+          h2 {{ margin:0 0 12px; color:var(--navy); font-size:30px; letter-spacing:-.03em; }}
+          .muted {{ margin:0 0 26px; color:var(--muted); line-height:1.55; }}
+          label {{ display:block; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--navy); font-weight:800; margin-bottom:8px; }}
+          input {{ width:100%; height:48px; border:1px solid var(--line); border-radius:14px; padding:0 14px; font-size:16px; outline:none; }}
+          input:focus {{ border-color:var(--blue); box-shadow:0 0 0 4px rgba(0,130,203,.12); }}
+          button {{ width:100%; margin-top:16px; height:48px; border:0; border-radius:14px; background:var(--blue); color:white; font-weight:800; cursor:pointer; }}
+          button:hover {{ filter:brightness(.95); }}
+          .login-alert {{ background:#fff4ef; border:1px solid rgba(172,68,30,.24); color:#793013; padding:12px 14px; border-radius:14px; margin-bottom:16px; font-size:14px; }}
+          .setup-box {{ display:grid; gap:8px; border:1px solid rgba(172,68,30,.25); background:#fff8f4; color:#793013; padding:16px; border-radius:16px; line-height:1.45; }}
+          .hint {{ color:var(--muted); font-size:13px; line-height:1.45; margin:14px 0 0; }}
+          .footer {{ margin-top:24px; color:var(--muted); font-size:12px; line-height:1.45; }}
+          @media (max-width:800px) {{
+            .login-shell {{ grid-template-columns:1fr; }}
+            .brand-panel {{ padding:32px; }}
+            .brand-panel img {{ margin-bottom:38px; }}
+            .brand-panel h1 {{ font-size:36px; }}
+            .access-panel {{ padding:32px; }}
+          }}
+        </style>
+      </head>
+      <body>
+        <main class="login-shell">
+          <section class="brand-panel">
+            <img src="/static/ora_logo_white.png" alt="Grupo ORA">
+            <h1>Fiscal Intelligence</h1>
+            <p>Ambiente seguro para consulta de NFS-e Nacional, conferência de retenções e auditoria operacional.</p>
+          </section>
+          <section class="access-panel">
+            <span class="eyebrow">Acesso protegido</span>
+            <h2>Entrar no sistema</h2>
+            <p class="muted">Este sistema manipula certificados, XMLs fiscais e dados de empresas. O acesso público exige senha administrativa.</p>
+            {error_html}
+            <form method="post" action="/login">
+              <input type="hidden" name="next" value="{escape(_safe_next_url(next_url))}">
+              {password_field}
+            </form>
+            {setup_html}
+            <p class="footer">ORA NFS-e Automático · Conectando ao agora e ao futuro.</p>
+          </section>
+        </main>
+      </body>
+    </html>
+    """
+
+
+@app.middleware("http")
+async def require_access_password(request: Request, call_next):
+    path = request.url.path
+    if path in PUBLIC_PATHS or path.startswith("/static/"):
+        return await call_next(request)
+
+    settings = get_settings()
+    if not is_auth_required():
+        return await call_next(request)
+
+    if settings.require_auth and not settings.app_access_password:
+        return HTMLResponse(render_login_page(setup_missing=True), status_code=503)
+
+    if _valid_session_token(request.cookies.get("ora_session")):
+        return await call_next(request)
+
+    accepts_html = "text/html" in request.headers.get("accept", "")
+    if accepts_html or request.method == "GET":
+        next_url = path + (f"?{request.url.query}" if request.url.query else "")
+        return RedirectResponse(f"/login?next={quote(next_url, safe='')}", status_code=303)
+    return HTMLResponse(render_login_page(error="Sessão expirada ou não autorizada."), status_code=401)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login(next: str = "/") -> str:
+    settings = get_settings()
+    if settings.require_auth and not settings.app_access_password:
+        return render_login_page(next_url=next, setup_missing=True)
+    return render_login_page(next_url=next)
+
+
+@app.post("/login", response_model=None)
+def login_submit(password: str = Form(""), next: str = Form("/")):
+    settings = get_settings()
+    if settings.require_auth and not settings.app_access_password:
+        return HTMLResponse(render_login_page(next_url=next, setup_missing=True), status_code=503)
+
+    if not settings.app_access_password:
+        return RedirectResponse(_safe_next_url(next), status_code=303)
+
+    if not hmac.compare_digest(password, settings.app_access_password):
+        return HTMLResponse(render_login_page(next_url=next, error="Senha inválida. Verifique a variável APP_ACCESS_PASSWORD."), status_code=401)
+
+    response = RedirectResponse(_safe_next_url(next), status_code=303)
+    response.set_cookie(
+        "ora_session",
+        _make_session_token(),
+        max_age=int(settings.session_max_age_seconds),
+        httponly=True,
+        secure=bool(settings.secure_cookies),
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/logout", response_model=None)
+def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie("ora_session")
+    return response
 
 
 @app.on_event("startup")
@@ -930,6 +1149,15 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
     )
     data = store.read()
     settings = get_settings()
+    render_mode = is_render_runtime()
+    env_label = "Ambiente Render" if render_mode else "Ambiente local"
+    data_detail = f"Dados em {settings.data_dir}"
+    footer_runtime = (
+        "Aplicação web hospedada no Render. Certificados A1, XMLs e arquivos operacionais devem ficar no Disk configurado."
+        if render_mode
+        else "Aplicação local. Certificados A1, senhas e XMLs fiscais permanecem sob controle do usuário."
+    )
+    logout_html = "<a class='button ghost compact-btn' href='/logout'>Sair</a>" if is_auth_required() else ""
     active_job = latest_active_job(data)
     if active_job:
         progress = job_progress_percent(active_job)
@@ -949,10 +1177,11 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
           </section>
         """
     else:
-        consulta_controls = """
+        consulta_controls = f"""
           <div class="top-actions">
             <a class="button blue compact-btn" href="/sincronizar">Nova busca</a>
             <a class="button ghost compact-btn" href="/retencoes">Retenções</a>
+            {logout_html}
           </div>
         """
     sub = subtitle or "Gestão local de NFS-e, retenções e conferência fiscal."
@@ -964,7 +1193,7 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>{escape(title)} · ORA NFS-e</title>
         <link rel="icon" href="/static/favicon.png">
-        <link rel="stylesheet" href="/static/ora.css?v=10">
+        <link rel="stylesheet" href="/static/ora.css?v=14">
       </head>
       <body>
         <div class="system-shell">
@@ -978,8 +1207,8 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
             </nav>
             <div class="sidebar-footer">
               <div class="local-badge">
-                <span>Ambiente local</span>
-                <strong>Dados em data/</strong>
+                <span>{escape(env_label)}</span>
+                <strong>{escape(data_detail)}</strong>
               </div>
               <span class="version-chip">v{escape(str(settings.app_version))}</span>
             </div>
@@ -1001,12 +1230,24 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
 
             <footer class="footer-note small">
               <img src="/static/ora_logo_blue.png" alt="Grupo ORA" class="footer-logo">
-              <span>Aplicação local. Certificados A1, senhas e XMLs fiscais permanecem sob controle do usuário.</span>
+              <span>{escape(footer_runtime)}</span>
             </footer>
           </div>
         </div>
       </body>
     </html>
+    """
+
+
+def render_runtime_notice_html() -> str:
+    if not is_render_runtime():
+        return ""
+    settings = get_settings()
+    return f"""
+      <section class="notice system-note">
+        <strong>Modo Render ativo</strong>
+        <span>Dados operacionais gravando em <span class="codeish">{escape(str(settings.data_dir))}</span>. Para produção, confirme no Render que existe um Disk montado exatamente nesse caminho.</span>
+      </section>
     """
 
 # ---------------------------------------------------------------------------
@@ -1016,11 +1257,14 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    settings = get_settings()
     return {
         "status": "ok",
         "app": "ORA NFS-e Automático",
-        "version": "0.11.0",
-        "mode": "local-agent",
+        "version": str(settings.app_version),
+        "mode": "render" if is_render_runtime() else "local",
+        "data_dir": str(settings.data_dir),
+        "auth": "enabled" if is_auth_required() else "disabled",
     }
 
 
@@ -1097,6 +1341,8 @@ def home() -> str:
         for row in monthly
     ) or "<tr><td colspan='5'>Sem movimento sincronizado ainda.</td></tr>"
 
+    render_notice = render_runtime_notice_html()
+
     retention_tiles = f"""
       <div class="tax-ledger">
         <div><span>ISS retido</span><strong>{fmt_money(prestado['valor_iss_retido'] + tomado['valor_iss_retido'])}</strong></div>
@@ -1137,6 +1383,8 @@ def home() -> str:
       </section>
 
       {metric_cards}
+
+      {render_notice}
 
       <section class="grid two">
         <section class="card data-card">
