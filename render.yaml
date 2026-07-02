@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers
     healthCheckPath: /health
     disk:
       name: ora-nfse-data
@@ -13,6 +13,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7
+      - key: PYTHONUNBUFFERED
+        value: "1"
       - key: APP_ENV
         value: render
       - key: DATA_DIR
@@ -21,6 +23,8 @@ services:
         value: "true"
       - key: SECURE_COOKIES
         value: "true"
+      - key: APP_PUBLIC_URL
+        sync: false
       - key: APP_ACCESS_PASSWORD
         sync: false
       - key: APP_SESSION_SECRET

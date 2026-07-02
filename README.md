@@ -1,20 +1,33 @@
 # ORA NFS-e Automático
 
-Sistema web para consulta de NFS-e Nacional no ADN, organização de XMLs por empresa, leitura de retenções segregadas por tributo, relatórios por data-base e conferência de planilhas Excel.
+## Versão v15 — operação online pelo Render
 
-## Versão v14 — pronta para Render
+Esta versão foi reconstruída para rodar como **aplicação web publicada no Render**, sem depender de agente local, GitHub Pages ou execução em `127.0.0.1`.
 
-Esta versão abandona a tentativa de operar pelo GitHub Pages e volta para uma arquitetura correta de aplicação web:
+A arquitetura agora é:
 
-- **FastAPI no Render** como backend e interface no mesmo serviço.
-- **Deploy por `render.yaml`** com build e start command prontos.
-- **Autenticação por senha** para proteger a URL pública.
-- **Health check `/health`** para o Render validar o deploy.
-- **Disco persistente** preparado em `/opt/render/project/src/data`.
-- **Sem banco de dados externo** nesta versão: a base continua em JSON local, XMLs e certificados criptografados no diretório de dados.
-- **Interface ORA em formato de sistema**, com menu lateral, topbar, filtros, tabelas e painéis operacionais.
+```text
+Navegador do usuário
+        ↓
+URL pública do Render (.onrender.com ou domínio próprio)
+        ↓
+FastAPI + interface ORA no mesmo serviço
+        ↓
+Disk persistente do Render para dados, certificados e XMLs
+```
 
-## Estrutura principal
+## O que esta versão resolve
+
+- Remove a dependência do GitHub Pages.
+- Mantém frontend e backend no mesmo serviço FastAPI.
+- Usa autenticação por senha para proteger a URL pública.
+- Grava dados fiscais no Disk persistente do Render.
+- Permite cadastrar empresas e enviar certificados A1 pela própria tela do sistema.
+- Permite buscar NFS-e no ADN/NFS-e Nacional diretamente pelo servidor Render.
+- Mantém relatórios, retenções, conferência Excel e histórico operacional.
+- Inclui tela **Ambiente** para validar se o serviço está online, autenticado e com armazenamento gravável.
+
+## Estrutura esperada
 
 ```text
 ora-nfse-automatico/
@@ -24,107 +37,97 @@ ora-nfse-automatico/
 ├── Procfile
 ├── runtime.txt
 ├── app/
-│   ├── main.py
-│   ├── config.py
-│   ├── store.py
-│   ├── adn_client.py
-│   ├── nfse_parser.py
-│   ├── conferencia_excel.py
-│   └── static/
+├── docs/
 ├── samples/
 ├── tests/
-└── docs/
+└── PUBLICAR_RENDER.md
 ```
 
-## Deploy recomendado no Render
+## Variáveis obrigatórias no Render
 
-1. Envie esta versão para o GitHub.
-2. No Render, crie um **Blueprint** apontando para o repositório.
-3. O Render vai ler o `render.yaml`.
-4. Preencha a variável secreta `APP_ACCESS_PASSWORD`.
-5. Aguarde o deploy.
-6. Abra a URL `.onrender.com`.
+| Variável | Valor recomendado |
+|---|---|
+| `APP_ENV` | `render` |
+| `DATA_DIR` | `/opt/render/project/src/data` |
+| `REQUIRE_AUTH` | `true` |
+| `SECURE_COOKIES` | `true` |
+| `APP_ACCESS_PASSWORD` | senha forte definida por você |
+| `APP_SESSION_SECRET` | gerado pelo Render ou valor longo aleatório |
+| `NFSE_ADN_BASE_URL` | `https://adn.nfse.gov.br/contribuintes` |
 
-O `render.yaml` já define:
+## Disk persistente
+
+Configure um Disk no Render com:
 
 ```text
+Mount Path: /opt/render/project/src/data
+Size: 1 GB ou mais
+```
+
+Tudo que precisa sobreviver a redeploy/restart fica dentro desse caminho:
+
+```text
+/opt/render/project/src/data/ora_nfse_storage.json
+/opt/render/project/src/data/certificados/
+/opt/render/project/src/data/xmls/
+/opt/render/project/src/data/.ora_nfse_secret.key
+```
+
+## Comandos de deploy
+
 Build Command:
+
+```bash
 pip install --upgrade pip && pip install -r requirements.txt
+```
 
 Start Command:
-uvicorn main:app --host 0.0.0.0 --port $PORT
 
-Health Check:
+```bash
+uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers
+```
+
+Health Check Path:
+
+```text
 /health
 ```
 
-## Variáveis de ambiente importantes
+## Fluxo de uso online
 
-| Variável | Uso |
-|---|---|
-| `APP_ENV` | Use `render` no servidor. |
-| `DATA_DIR` | Caminho onde ficam JSON, XMLs e certificados criptografados. |
-| `REQUIRE_AUTH` | `true` em produção. |
-| `APP_ACCESS_PASSWORD` | Senha administrativa do sistema. Não colocar no GitHub. |
-| `APP_SESSION_SECRET` | Segredo de sessão. O `render.yaml` gera automaticamente. |
-| `SECURE_COOKIES` | `true` no Render. |
-| `NFSE_ADN_BASE_URL` | Endpoint do ADN/NFS-e Nacional. |
-
-## Persistência
-
-Para operação real, use o Disk do Render montado em:
-
-```text
-/opt/render/project/src/data
-```
-
-Sem Disk, os dados podem ser perdidos em redeploys ou restarts. Isso inclui:
-
-- clientes cadastrados;
-- vínculos de certificados;
-- XMLs baixados;
-- histórico de execução;
-- senha criptografada dos certificados.
+1. Acesse a URL do Render.
+2. Entre com a senha configurada em `APP_ACCESS_PASSWORD`.
+3. Abra **Ambiente** e confirme:
+   - modo Render/online;
+   - armazenamento gravável;
+   - `DATA_DIR` correto;
+   - autenticação ativa.
+4. Cadastre os certificados em **Empresas**.
+5. Cadastre os CNPJs.
+6. Rode a consulta em **Busca**.
+7. Confira em **Retenções**, **Notas** e **Conferência Excel**.
 
 ## Segurança
 
-Nunca suba para o GitHub:
-
-- `.env`;
-- certificados A1;
-- XMLs reais;
-- pasta `data/`;
-- arquivos `.pfx`, `.p12`, `.pem`, `.key`.
-
-A versão v14 adiciona proteção por senha para a URL pública. Em produção, mantenha:
+Nunca envie para o GitHub:
 
 ```text
-REQUIRE_AUTH=true
-APP_ACCESS_PASSWORD=<senha forte>
-SECURE_COOKIES=true
+.env
+data/
+certificados/
+certs/
+*.pfx
+*.p12
+*.pem
+*.key
+*.crt
+*.cer
+*.db
+*.sqlite
 ```
 
-## Rodar localmente
+A senha do sistema deve ficar somente no Environment do Render.
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn main:app --reload
-```
+## Observação importante
 
-Abra:
-
-```text
-http://127.0.0.1:8000
-```
-
-## Testes
-
-```bash
-pytest
-```
-
-## Observação técnica
-
-A aplicação continua sem banco de dados externo nesta etapa. Isso simplifica o deploy inicial, mas exige Disk persistente no Render para produção. Em uma próxima evolução, é recomendado migrar a persistência operacional para PostgreSQL e manter arquivos fiscais em storage controlado.
+Esta versão usa persistência em JSON e arquivos no Disk do Render. Isso é suficiente para iniciar a operação online. Para evolução como produto com múltiplos usuários simultâneos e maior escala, recomenda-se migrar a base para PostgreSQL.

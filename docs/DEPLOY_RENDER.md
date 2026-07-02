@@ -1,139 +1,105 @@
-# Publicação no Render — ORA NFS-e Automático
+# Publicar no Render — ORA NFS-e Automático v15
 
-## Caminho recomendado: Blueprint
+Use este caminho para publicar o sistema como aplicação web real, sem GitHub Pages e sem agente local.
 
-Use este caminho para publicar o sistema de forma correta.
+## 1. Atualize o GitHub
 
-### 1. Atualize o repositório no GitHub
+Copie esta versão para a pasta do repositório `ora-nfse-automatico`.
 
-Copie os arquivos desta versão para a pasta local do repositório `ora-nfse-automatico`.
+No GitHub Desktop:
 
-Depois, no GitHub Desktop:
-
-1. confira as alterações;
-2. Summary: `Prepara sistema para deploy no Render`;
+1. confira os arquivos em **Changes**;
+2. use o commit `Prepara sistema para operação online no Render`;
 3. clique em **Commit to main**;
 4. clique em **Push origin**.
 
-### 2. Crie o Blueprint no Render
+## 2. Configure o serviço no Render
 
-No Render:
+No Render, crie um **Blueprint** ou **Web Service** apontando para o repositório.
 
-1. clique em **New**;
-2. escolha **Blueprint**;
-3. conecte sua conta GitHub;
-4. escolha o repositório `ora-nfse-automatico`;
-5. confirme que o Render identificou o arquivo `render.yaml`;
-6. preencha `APP_ACCESS_PASSWORD` com uma senha forte;
-7. clique em **Apply**.
-
-Link direto sugerido, depois que o `render.yaml` estiver no GitHub:
+Se usar Web Service manual:
 
 ```text
-https://dashboard.render.com/blueprint/new?repo=https://github.com/victorgadiola-dev/ora-nfse-automatico
-```
-
-### 3. Variável obrigatória
-
-O Render vai pedir:
-
-```text
-APP_ACCESS_PASSWORD
-```
-
-Use uma senha forte. Essa senha não fica no GitHub.
-
-### 4. Disk persistente
-
-A configuração principal usa Disk em:
-
-```text
-/opt/render/project/src/data
-```
-
-Esse caminho precisa coincidir com:
-
-```text
-DATA_DIR=/opt/render/project/src/data
-```
-
-### 5. Conferência depois do deploy
-
-Abra:
-
-```text
-https://SEU-SERVICO.onrender.com/health
-```
-
-Deve retornar algo parecido com:
-
-```json
-{
-  "status": "ok",
-  "app": "ORA NFS-e Automático",
-  "mode": "render",
-  "auth": "enabled"
-}
-```
-
-Depois abra a URL principal do serviço.
-
-## Caminho manual: Web Service
-
-Use este caminho se não quiser Blueprint.
-
-### Configurações
-
-```text
-Language:
-Python 3
-
 Build Command:
 pip install --upgrade pip && pip install -r requirements.txt
 
 Start Command:
-uvicorn main:app --host 0.0.0.0 --port $PORT
+uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers
 
 Health Check Path:
 /health
 ```
 
-### Environment
+## 3. Configure o Disk
+
+Adicione um Disk persistente:
+
+```text
+Mount Path:
+/opt/render/project/src/data
+
+Size:
+1 GB ou mais
+```
+
+A variável `DATA_DIR` precisa apontar para o mesmo caminho:
+
+```text
+DATA_DIR=/opt/render/project/src/data
+```
+
+## 4. Configure as variáveis
+
+Obrigatórias:
 
 ```text
 APP_ENV=render
-DATA_DIR=/opt/render/project/src/data
 REQUIRE_AUTH=true
-APP_ACCESS_PASSWORD=<sua senha forte>
-APP_SESSION_SECRET=<um texto aleatório grande>
 SECURE_COOKIES=true
+APP_ACCESS_PASSWORD=coloque-uma-senha-forte
+DATA_DIR=/opt/render/project/src/data
+NFSE_ADN_BASE_URL=https://adn.nfse.gov.br/contribuintes
 ```
 
-Também configure o Disk no serviço:
+Opcional, mas recomendado:
 
 ```text
-Mount path:
-/opt/render/project/src/data
+APP_PUBLIC_URL=https://seu-servico.onrender.com
 ```
 
-## Problemas comuns
+## 5. Valide
 
-### A tela abre, mas pede configuração de senha
-
-Configure `APP_ACCESS_PASSWORD` no Render e faça novo deploy.
-
-### Dados sumiram depois de redeploy
-
-O serviço foi criado sem Disk persistente ou o `DATA_DIR` não está apontando para o mesmo caminho do Disk.
-
-### Deploy falhou no start command
-
-Confira se existe `main.py` na raiz do repositório e se o start command está assim:
+Abra:
 
 ```text
-uvicorn main:app --host 0.0.0.0 --port $PORT
+https://seu-servico.onrender.com/health
 ```
 
-### Certificado não persiste
+Depois acesse:
 
-Confirme se a pasta `data/certificados` está dentro do Disk persistente.
+```text
+https://seu-servico.onrender.com/ambiente
+```
+
+A tela **Ambiente** deve mostrar:
+
+```text
+Modo de execução: Render / online
+Armazenamento: OK / Gravável
+Autenticação: Ativa
+Senha APP_ACCESS_PASSWORD: Configurada
+```
+
+## 6. Operação
+
+Depois disso, o sistema opera todo pelo link do Render:
+
+- empresas;
+- certificados A1;
+- busca ADN/NFS-e;
+- retenções;
+- relatórios;
+- conferência Excel;
+- histórico.
+
+Não use mais GitHub Pages para abrir o sistema.

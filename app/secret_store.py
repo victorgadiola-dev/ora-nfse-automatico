@@ -40,4 +40,4 @@ def decrypt_secret(value: str | None) -> str | None:
     try:
         return _fernet().decrypt(value.encode("ascii")).decode("utf-8")
     except InvalidToken as exc:
-        raise SecretStoreError("Não consegui descriptografar a senha local. Verifique se a chave em data/.ora_nfse_secret.key é a mesma usada quando o certificado foi cadastrado.") from exc
+        raise SecretStoreError("Não consegui descriptografar a senha do certificado. Verifique se a chave em DATA_DIR/.ora_nfse_secret.key é a mesma usada quando o certificado foi cadastrado.") from exc

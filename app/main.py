@@ -33,7 +33,7 @@ from app.store import JsonStore, store, utc_now_iso
 
 app = FastAPI(
     title="ORA NFS-e Automático",
-    version="0.14.0",
+    version="0.15.0",
     description="Busca automática de NFS-e no ADN/NFS-e Nacional, com painel ORA, relatórios, conferência Excel, autenticação de acesso e deploy preparado para Render.",
 )
 
@@ -1136,6 +1136,7 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
         ("/conferencia-excel", "conferencia", "Conferência", "Importar Excel"),
         ("/relatorio", "relatorio", "Notas", "Auditoria"),
         ("/sincronizacao/logs", "logs", "Histórico", "Logs"),
+        ("/ambiente", "ambiente", "Ambiente", "Render"),
     ]
     active_label = next((label for _href, key, label, _desc in nav if key == active), title)
     nav_html = "".join(
@@ -1150,12 +1151,12 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
     data = store.read()
     settings = get_settings()
     render_mode = is_render_runtime()
-    env_label = "Ambiente Render" if render_mode else "Ambiente local"
-    data_detail = f"Dados em {settings.data_dir}"
+    env_label = "Sistema online" if render_mode else "Execução local"
+    data_detail = f"Render Disk · {settings.data_dir}" if render_mode else f"Dados locais · {settings.data_dir}"
     footer_runtime = (
-        "Aplicação web hospedada no Render. Certificados A1, XMLs e arquivos operacionais devem ficar no Disk configurado."
+        "Aplicação web em produção no Render. Certificados A1, XMLs e arquivos operacionais ficam no Disk persistente configurado."
         if render_mode
-        else "Aplicação local. Certificados A1, senhas e XMLs fiscais permanecem sob controle do usuário."
+        else "Execução local apenas para desenvolvimento. Em operação, use o link publicado no Render."
     )
     logout_html = "<a class='button ghost compact-btn' href='/logout'>Sair</a>" if is_auth_required() else ""
     active_job = latest_active_job(data)
@@ -1184,7 +1185,7 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
             {logout_html}
           </div>
         """
-    sub = subtitle or "Gestão local de NFS-e, retenções e conferência fiscal."
+    sub = subtitle or ("Gestão em nuvem de NFS-e, retenções e conferência fiscal." if render_mode else "Gestão de NFS-e, retenções e conferência fiscal.")
     return f"""
     <!doctype html>
     <html lang="pt-BR">
@@ -1193,7 +1194,7 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>{escape(title)} · ORA NFS-e</title>
         <link rel="icon" href="/static/favicon.png">
-        <link rel="stylesheet" href="/static/ora.css?v=14">
+        <link rel="stylesheet" href="/static/ora.css?v=15">
       </head>
       <body>
         <div class="system-shell">
@@ -1239,14 +1240,47 @@ def render_page(title: str, active: str, body: str, subtitle: str | None = None)
     """
 
 
+def runtime_storage_report() -> dict[str, Any]:
+    settings = get_settings()
+    data_dir = Path(settings.data_dir)
+    report: dict[str, Any] = {
+        "mode": "render" if is_render_runtime() else "local",
+        "data_dir": str(data_dir),
+        "storage_file": str(settings.storage_file),
+        "cert_store_dir": str(settings.cert_store_dir),
+        "xml_store_dir": str(settings.xml_store_dir),
+        "writable": False,
+        "persistent_expected": is_render_runtime(),
+        "message": "",
+    }
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        probe = data_dir / ".ora_render_write_check"
+        probe.write_text(now_iso(), encoding="utf-8")
+        probe.read_text(encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        report["writable"] = True
+        report["message"] = "Armazenamento operacional gravável."
+    except Exception as exc:  # noqa: BLE001
+        report["message"] = f"Armazenamento não gravável: {exc}"
+    return report
+
+
 def render_runtime_notice_html() -> str:
     if not is_render_runtime():
         return ""
     settings = get_settings()
+    storage = runtime_storage_report()
+    kind = "ok" if storage.get("writable") else "warn"
+    msg = (
+        "Serviço publicado no Render. Cadastros, certificados e XMLs serão gravados no Disk persistente configurado."
+        if storage.get("writable")
+        else "O serviço está online, mas o armazenamento não está gravável. Verifique o Disk e a variável DATA_DIR no Render."
+    )
     return f"""
-      <section class="notice system-note">
-        <strong>Modo Render ativo</strong>
-        <span>Dados operacionais gravando em <span class="codeish">{escape(str(settings.data_dir))}</span>. Para produção, confirme no Render que existe um Disk montado exatamente nesse caminho.</span>
+      <section class="notice system-note {kind}">
+        <strong>Modo nuvem ativo</strong>
+        <span>{escape(msg)} Caminho atual: <span class="codeish">{escape(str(settings.data_dir))}</span>.</span>
       </section>
     """
 
@@ -1256,21 +1290,81 @@ def render_runtime_notice_html() -> str:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health() -> dict[str, Any]:
     settings = get_settings()
+    storage = runtime_storage_report()
     return {
-        "status": "ok",
+        "status": "ok" if storage.get("writable") else "storage_warning",
         "app": "ORA NFS-e Automático",
         "version": str(settings.app_version),
         "mode": "render" if is_render_runtime() else "local",
+        "public_url": str(settings.app_public_url or ""),
         "data_dir": str(settings.data_dir),
+        "storage_writable": bool(storage.get("writable")),
         "auth": "enabled" if is_auth_required() else "disabled",
     }
 
 
 @app.get("/api/health")
-def api_health() -> dict[str, str]:
+def api_health() -> dict[str, Any]:
     return health()
+
+
+@app.get("/ambiente", response_class=HTMLResponse)
+def ambiente() -> str:
+    settings = get_settings()
+    storage = runtime_storage_report()
+    mode_label = "Render / online" if is_render_runtime() else "Local / desenvolvimento"
+    writable_label = "OK" if storage.get("writable") else "Atenção"
+    writable_kind = "ok" if storage.get("writable") else "warn"
+    auth_label = "Ativa" if is_auth_required() else "Desativada"
+    password_label = "Configurada" if settings.app_access_password else "Pendente"
+    public_url = settings.app_public_url or "URL do serviço Render"
+
+    rows = [
+        ("Modo de execução", mode_label),
+        ("URL pública", public_url),
+        ("Autenticação", auth_label),
+        ("Senha APP_ACCESS_PASSWORD", password_label),
+        ("DATA_DIR", str(settings.data_dir)),
+        ("Arquivo de dados", str(settings.storage_file)),
+        ("Certificados A1", str(settings.cert_store_dir)),
+        ("XMLs salvos", str(settings.xml_store_dir)),
+        ("Base ADN", str(settings.nfse_adn_base_url)),
+    ]
+    table_rows = "".join(f"<tr><th>{escape(label)}</th><td>{escape(value)}</td></tr>" for label, value in rows)
+
+    body = f"""
+      <section class="card dark environment-hero">
+        <div>
+          <span class="eyebrow">Ambiente de produção</span>
+          <h2>Sistema operando pelo Render</h2>
+          <p>Esta tela confirma que a aplicação está pronta para funcionar pelo link público, sem agente local. Os dados fiscais ficam no armazenamento configurado no serviço.</p>
+        </div>
+        <div class="status-orb {writable_kind}">
+          <span>{escape(writable_label)}</span>
+          <strong>{'Gravável' if storage.get('writable') else 'Verificar Disk'}</strong>
+        </div>
+      </section>
+
+      <section class="grid two">
+        <div class="card">
+          <div class="section-title"><span class="small-eyebrow">Render</span><h2>Status do serviço</h2></div>
+          <div class="table-wrap compact"><table><tbody>{table_rows}</tbody></table></div>
+        </div>
+        <div class="card">
+          <div class="section-title"><span class="small-eyebrow">Checklist</span><h2>Para operar 100% online</h2></div>
+          <ul class="check-list">
+            <li><strong>APP_ACCESS_PASSWORD</strong> configurada no Environment do Render.</li>
+            <li><strong>DATA_DIR</strong> apontando para <span class="codeish">/opt/render/project/src/data</span>.</li>
+            <li><strong>Disk persistente</strong> anexado no mesmo caminho do DATA_DIR.</li>
+            <li>Certificados A1 enviados pela tela <strong>Empresas</strong>.</li>
+            <li>Consulta feita pela tela <strong>Busca</strong>, usando o link <span class="codeish">.onrender.com</span>.</li>
+          </ul>
+        </div>
+      </section>
+    """
+    return render_page("Ambiente", "ambiente", body, subtitle="Status do serviço publicado, armazenamento persistente e variáveis essenciais.")
 
 
 
@@ -1303,7 +1397,7 @@ def home() -> str:
     """
 
     status_job = "Sem busca recente"
-    job_detail = "Execute uma busca para carregar NSUs e XMLs na base local."
+    job_detail = "Execute uma busca para carregar NSUs e XMLs na base online do sistema."
     job_action = "/sincronizar"
     job_button = "Iniciar busca"
     job_kind = "info"
@@ -1533,7 +1627,7 @@ def clientes_page() -> str:
 
       <section class="card data-card">
         <div class="card-head">
-          <div><span class="small-eyebrow">Credenciais locais</span><h2>Certificados cadastrados</h2></div>
+          <div><span class="small-eyebrow">Credenciais do ambiente</span><h2>Certificados cadastrados</h2></div>
           <span class="muted small">Exclua apenas certificados sem autorização vigente.</span>
         </div>
         {render_certificados_table(data)}
@@ -1746,7 +1840,7 @@ def ui_parar_servico() -> str:
         <div class="actions" style="justify-content:center; margin-top:18px;"><a class="button blue" href="/sincronizar">Ir para busca</a></div>
       </section>
     """
-    return render_page("Parar consulta", "sincronizar", body, subtitle="O controle agora interrompe somente a consulta das notas, não o sistema local.")
+    return render_page("Parar consulta", "sincronizar", body, subtitle="O controle agora interrompe somente a consulta das notas, não o serviço web.")
 
 
 async def criar_certificado(alias: str, senha: str | None, arquivo: UploadFile) -> dict[str, Any]:
@@ -1908,7 +2002,7 @@ def process_xml_items(
 
 
 def reprocess_saved_retencoes(data: dict[str, Any]) -> dict[str, Any]:
-    """Recalcula notas já gravadas usando o XML armazenado localmente.
+    """Recalcula notas já gravadas usando o XML armazenado no sistema.
 
     Útil após ajustes de parser fiscal, sem depender de nova consulta ao ADN.
     """
@@ -1999,7 +2093,7 @@ def reprocess_saved_retencoes(data: dict[str, Any]) -> dict[str, Any]:
         "finalizado_em": now_iso(),
         "mensagens": [
             f"{counts['atualizadas']} nota(s) recalculada(s) a partir dos XMLs salvos.",
-            f"{counts['sem_xml']} nota(s) sem XML local para reprocessamento.",
+            f"{counts['sem_xml']} nota(s) sem XML armazenado para reprocessamento.",
             f"{counts['falhas']} falha(s) de reprocessamento.",
             *counts["mensagens"],
         ],
@@ -2475,7 +2569,7 @@ def sync_progress_page(job_id: int) -> str:
       <div class="kpi-strip">
         <div class="card metric blue"><span class="metric-label">Consultas</span><strong class="metric-value">{totals.get('consultas_realizadas', 0)}</strong><span class="metric-detail">requisições ao Portal Nacional</span></div>
         <div class="card metric accent"><span class="metric-label">Documentos</span><strong class="metric-value">{totals.get('documentos_recebidos', 0)}</strong><span class="metric-detail">XMLs/documentos retornados</span></div>
-        <div class="card metric"><span class="metric-label">Notas novas</span><strong class="metric-value">{totals.get('importadas', 0)}</strong><span class="metric-detail">gravadas na base local</span></div>
+        <div class="card metric"><span class="metric-label">Notas novas</span><strong class="metric-value">{totals.get('importadas', 0)}</strong><span class="metric-detail">gravadas na base do sistema</span></div>
         <div class="card metric dark"><span class="metric-label">Pendências</span><strong class="metric-value">{job.get('empresas_com_erro', 0)}</strong><span class="metric-detail">empresas com alerta</span></div>
       </div>
 
@@ -2710,7 +2804,7 @@ def resumo_empresas(
         reprocess_notice = f"""
           <section class="notice success">
             <strong>Retenções recalculadas.</strong>
-            <span>{int(reprocessadas or 0)} nota(s) atualizada(s), {int(sem_xml or 0)} sem XML local e {int(falhas or 0)} com alerta.</span>
+            <span>{int(reprocessadas or 0)} nota(s) atualizada(s), {int(sem_xml or 0)} sem XML armazenado e {int(falhas or 0)} com alerta.</span>
           </section>
         """
 
@@ -2775,7 +2869,7 @@ def resumo_empresas(
             <span class="small-eyebrow">Livro de retenções</span>
             <h2>Retido por tributo e natureza</h2>
           </div>
-          <form method="post" action="/ui/reprocessar-retencoes" onsubmit="return confirm('Recalcular as retenções das notas já salvas usando os XMLs locais?');">
+          <form method="post" action="/ui/reprocessar-retencoes" onsubmit="return confirm('Recalcular as retenções das notas já salvas usando os XMLs armazenados?');">
             <button class="ghost compact-btn" type="submit">Recalcular XMLs</button>
           </form>
         </div>
@@ -3538,7 +3632,7 @@ def render_conferencia_excel_page(
         {guide}
       </section>
     """
-    return render_page("Conferência Excel", "conferencia", body, subtitle="Importação e comparação de planilha externa contra a base local.")
+    return render_page("Conferência Excel", "conferencia", body, subtitle="Importação e comparação de planilha externa contra a base online do sistema.")
 
 @app.get("/conferencia-excel", response_class=HTMLResponse)
 def conferencia_excel(

@@ -1043,3 +1043,101 @@ tfoot td {
   .notice { display: grid; }
   .progress-meta em { margin-left: 0; }
 }
+
+
+/* v15 · Render cloud environment */
+.environment-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 168px;
+}
+
+.environment-hero p {
+  max-width: 720px;
+  margin: 10px 0 0;
+  color: rgba(255,255,255,.72);
+}
+
+.status-orb {
+  min-width: 132px;
+  min-height: 132px;
+  border-radius: 34px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 18px;
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.16);
+}
+
+.status-orb span {
+  display: block;
+  color: rgba(255,255,255,.68);
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  font-weight: 800;
+}
+
+.status-orb strong {
+  color: #fff;
+  font-size: 1rem;
+}
+
+.status-orb.ok {
+  box-shadow: inset 0 0 0 1px rgba(15,118,110,.32);
+}
+
+.status-orb.warn {
+  box-shadow: inset 0 0 0 1px rgba(172,68,30,.42);
+}
+
+.check-list {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.check-list li {
+  position: relative;
+  padding-left: 28px;
+  color: var(--ora-muted);
+}
+
+.check-list li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .35em;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(0,130,203,.12);
+  border: 1px solid rgba(0,130,203,.28);
+}
+
+.notice.system-note.ok {
+  border-color: rgba(15,118,110,.22);
+  background: rgba(15,118,110,.07);
+}
+
+.notice.system-note.warn {
+  border-color: rgba(172,68,30,.25);
+  background: rgba(172,68,30,.08);
+}
+
+@media (max-width: 880px) {
+  .environment-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .status-orb {
+    min-width: 100%;
+    min-height: 92px;
+    border-radius: 22px;
+  }
+}

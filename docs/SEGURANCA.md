@@ -1,13 +1,26 @@
-# Segurança operacional
+# Segurança — ORA NFS-e Automático no Render
 
-Este sistema manipula dados fiscais, certificados A1 e XMLs. Em ambiente público, aplique estas regras:
+## Regras obrigatórias
 
 1. Use `REQUIRE_AUTH=true`.
-2. Defina `APP_ACCESS_PASSWORD` no Render, nunca no GitHub.
-3. Use `SECURE_COOKIES=true` no Render.
-4. Não suba `.env`, `data/`, certificados ou XMLs reais.
-5. Use Disk persistente para não perder certificados e histórico.
+2. Defina `APP_ACCESS_PASSWORD` no Environment do Render.
+3. Use `SECURE_COOKIES=true`.
+4. Use Disk persistente para `DATA_DIR=/opt/render/project/src/data`.
+5. Não envie `.env`, certificados, XMLs reais ou `data/` para o GitHub.
 6. Restrinja acesso ao repositório GitHub.
-7. Troque a senha se alguém sair da equipe ou se houver suspeita de exposição.
+7. Troque a senha de acesso periodicamente.
+8. Exclua certificados vencidos ou que não estejam em uso.
+9. Use a tela **Ambiente** para conferir se o armazenamento está gravável antes de operar.
 
-A senha de acesso protege a interface. Ela não substitui políticas internas de controle de acesso, gestão de certificados e segregação de funções.
+## Arquivos sensíveis
+
+O sistema pode armazenar no Disk do Render:
+
+- certificados A1 `.pfx`/`.p12`;
+- senha criptografada do certificado;
+- chave de criptografia local do sistema;
+- XMLs de NFS-e;
+- histórico de consultas;
+- relatórios gerados sob demanda.
+
+Esses arquivos não devem ser baixados ou compartilhados sem controle interno.
