@@ -33,8 +33,8 @@ from app.store import JsonStore, store, utc_now_iso
 
 app = FastAPI(
     title="ORA NFS-e Automático",
-    version="0.15.0",
-    description="Busca automática de NFS-e no ADN/NFS-e Nacional, com painel ORA, relatórios, conferência Excel, autenticação de acesso e deploy preparado para Render.",
+    version="0.17.0",
+    description="Busca automática de NFS-e no ADN/NFS-e Nacional, com painel ORA, relatórios, conferência Excel, autenticação de acesso e deploy preparado para Render, com seleção operacional de notas prestadas/tomadas.",
 )
 
 # CORS fica restrito por padrão. Em Render, a interface e a API rodam no mesmo domínio.
@@ -879,6 +879,7 @@ JOB_NUMERIC_FIELDS = [
     "atualizadas",
     "ignoradas",
     "fora_periodo",
+    "fora_escopo",
 ]
 
 
@@ -943,6 +944,118 @@ def job_recalculate_totals(job: dict[str, Any]) -> None:
     job["empresas_com_erro"] = sum(1 for item in clientes if str(item.get("status") or "").upper() in {"ERRO", "SEM CERTIFICADO"})
 
 
+def parse_optional_positive_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+CONSULTA_PAPEIS = {"TODOS", "PRESTADOR", "TOMADOR"}
+
+
+def normalize_consulta_papel(value: Any) -> str:
+    """Normaliza o escopo operacional da consulta.
+
+    TODOS importa qualquer nota vinculada ao CNPJ.
+    PRESTADOR importa apenas notas em que o CNPJ consultado é prestador.
+    TOMADOR importa apenas notas em que o CNPJ consultado é tomador.
+    """
+    normalized = str(value or "TODOS").strip().upper()
+    aliases = {
+        "PRESTADAS": "PRESTADOR",
+        "PRESTADA": "PRESTADOR",
+        "EMITIDAS": "PRESTADOR",
+        "EMITIDA": "PRESTADOR",
+        "TOMADAS": "TOMADOR",
+        "TOMADA": "TOMADOR",
+        "RECEBIDAS": "TOMADOR",
+        "RECEBIDA": "TOMADOR",
+        "TODAS": "TODOS",
+        "AMBAS": "TODOS",
+    }
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in CONSULTA_PAPEIS else "TODOS"
+
+
+def consulta_papel_label(value: Any) -> str:
+    papel = normalize_consulta_papel(value)
+    return {
+        "TODOS": "Prestadas e tomadas",
+        "PRESTADOR": "Apenas prestadas",
+        "TOMADOR": "Apenas tomadas",
+    }[papel]
+
+
+def nsu_cursor_field(consulta_papel: Any) -> str:
+    papel = normalize_consulta_papel(consulta_papel)
+    if papel == "PRESTADOR":
+        return "ultimo_nsu_prestador"
+    if papel == "TOMADOR":
+        return "ultimo_nsu_tomador"
+    return "ultimo_nsu"
+
+
+def cliente_nsu_cursor(cliente: dict[str, Any], consulta_papel: Any = "TODOS") -> int:
+    """Retorna o cursor de NSU adequado ao escopo selecionado.
+
+    Para empresas já existentes antes da v17, os campos por papel podem não existir.
+    Nesses casos, usa o `ultimo_nsu` geral como fallback para não forçar uma
+    reconsulta histórica involuntária.
+    """
+    field = nsu_cursor_field(consulta_papel)
+    value = cliente.get(field)
+    if value in (None, "") and field != "ultimo_nsu":
+        value = cliente.get("ultimo_nsu")
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def resolve_nsu_start(
+    cliente: dict[str, Any],
+    reiniciar_nsu: bool = False,
+    nsu_inicial: int | None = None,
+    consulta_papel: Any = "TODOS",
+) -> int:
+    """Resolve o primeiro NSU da consulta.
+
+    Prioridade operacional:
+    1. NSU inicial manual informado pelo usuário;
+    2. Reconsultar desde 1, quando marcado;
+    3. Próximo NSU gravado no cursor do escopo selecionado.
+    """
+    manual = parse_optional_positive_int(nsu_inicial)
+    if manual is not None:
+        return manual
+    if reiniciar_nsu:
+        return 1
+    return cliente_nsu_cursor(cliente, consulta_papel) + 1
+
+
+def advance_cliente_nsu(cliente: dict[str, Any], nsu: int, consulta_papel: Any = "TODOS") -> None:
+    """Avança o cursor de NSU sem perder histórico de outro papel.
+
+    Uma consulta somente de tomadas não deve avançar o cursor das prestadas, e
+    vice-versa. Quando o escopo é TODOS, os três cursores são atualizados.
+    """
+    try:
+        nsu_value = int(nsu)
+    except (TypeError, ValueError):
+        return
+    papel = normalize_consulta_papel(consulta_papel)
+    if papel == "TODOS":
+        for field in ["ultimo_nsu", "ultimo_nsu_prestador", "ultimo_nsu_tomador"]:
+            cliente[field] = max(int(cliente.get(field) or 0), nsu_value)
+    else:
+        field = nsu_cursor_field(papel)
+        cliente[field] = max(int(cliente.get(field) or 0), nsu_value)
+
+
 def create_sync_job(
     clientes: list[dict[str, Any]],
     inicio: date | None,
@@ -951,8 +1064,11 @@ def create_sync_job(
     parar_apos_vazios: int,
     reiniciar_nsu: bool,
     selected_ids: list[int] | None = None,
+    nsu_inicial: int | None = None,
+    consulta_papel: Any = "TODOS",
 ) -> dict[str, Any]:
     data = store.read()
+    consulta_papel = normalize_consulta_papel(consulta_papel)
     job_id = JsonStore.next_id(data, "job")
     job = {
         "id": job_id,
@@ -963,10 +1079,14 @@ def create_sync_job(
         "cancelar_solicitado": False,
         "periodo_inicio": inicio.isoformat() if inicio else None,
         "periodo_fim": fim.isoformat() if fim else None,
+        "consulta_papel": consulta_papel,
+        "consulta_papel_label": consulta_papel_label(consulta_papel),
         "parametros": {
             "max_consultas": int(max_consultas),
             "parar_apos_vazios": int(parar_apos_vazios),
             "reiniciar_nsu": bool(reiniciar_nsu),
+            "nsu_inicial": parse_optional_positive_int(nsu_inicial),
+            "consulta_papel": consulta_papel,
             "cliente_ids": selected_ids or [],
         },
         "total_empresas": len(clientes),
@@ -981,14 +1101,17 @@ def create_sync_job(
                 "razao_social": c.get("razao_social", ""),
                 "cnpj": c.get("cnpj", ""),
                 "status": "AGUARDANDO",
-                "nsu_inicial": int(c.get("ultimo_nsu") or 0) + 1,
-                "ultimo_nsu_processado": int(c.get("ultimo_nsu") or 0),
+                "consulta_papel": consulta_papel,
+                "consulta_papel_label": consulta_papel_label(consulta_papel),
+                "nsu_inicial": resolve_nsu_start(c, reiniciar_nsu=bool(reiniciar_nsu), nsu_inicial=nsu_inicial, consulta_papel=consulta_papel),
+                "ultimo_nsu_processado": cliente_nsu_cursor(c, consulta_papel),
                 "consultas_realizadas": 0,
                 "documentos_recebidos": 0,
                 "importadas": 0,
                 "atualizadas": 0,
                 "ignoradas": 0,
                 "fora_periodo": 0,
+                "fora_escopo": 0,
                 "mensagens": [],
                 "erro": None,
                 "iniciado_em": None,
@@ -1012,7 +1135,7 @@ def update_job_cliente_from_result(job_id: int, cliente_id: int, result: dict[st
                     item["status"] = status
                 else:
                     item["status"] = result.get("status") or item.get("status") or "EM CONSULTA"
-                for field in ["nsu_inicial", "ultimo_nsu_processado", *JOB_NUMERIC_FIELDS]:
+                for field in ["nsu_inicial", "ultimo_nsu_processado", "consulta_papel", "consulta_papel_label", *JOB_NUMERIC_FIELDS]:
                     if field in result:
                         item[field] = result.get(field)
                 msgs = result.get("mensagens", []) or []
@@ -1052,6 +1175,8 @@ def run_sync_job(job_id: int) -> None:
     max_consultas = int(params.get("max_consultas") or 500)
     parar_apos_vazios = int(params.get("parar_apos_vazios") or 3)
     reiniciar_nsu = bool(params.get("reiniciar_nsu"))
+    nsu_inicial = parse_optional_positive_int(params.get("nsu_inicial"))
+    consulta_papel = normalize_consulta_papel(params.get("consulta_papel") or job.get("consulta_papel") or "TODOS")
 
     def mark_job(status: str, message: str, current: dict[str, Any] | None = None, finished: bool = False) -> None:
         def mutate(j: dict[str, Any]) -> None:
@@ -1064,7 +1189,7 @@ def run_sync_job(job_id: int) -> None:
             job_recalculate_totals(j)
         update_job(job_id, mutate)
 
-    mark_job("EM_ANDAMENTO", "Consulta iniciada.")
+    mark_job("EM_ANDAMENTO", f"Consulta iniciada · escopo: {consulta_papel_label(consulta_papel)}.")
     any_errors = False
     canceled = False
 
@@ -1074,19 +1199,30 @@ def run_sync_job(job_id: int) -> None:
         cliente = find_by_id(data.get("clientes", []), cliente_id)
         if not cliente:
             any_errors = True
-            update_job_cliente_from_result(job_id, cliente_id, sync_error_result({"id": cliente_id, "cnpj": item.get("cnpj"), "razao_social": item.get("razao_social")}, "Empresa não encontrada no cadastro.", inicio, fim), "ERRO")
+            update_job_cliente_from_result(job_id, cliente_id, sync_error_result({"id": cliente_id, "cnpj": item.get("cnpj"), "razao_social": item.get("razao_social"), "ultimo_nsu": item.get("ultimo_nsu_processado")}, "Empresa não encontrada no cadastro.", inicio, fim, nsu_inicial=nsu_inicial, reiniciar_nsu=reiniciar_nsu, consulta_papel=consulta_papel), "ERRO")
             continue
         if is_job_cancel_requested(job_id):
             canceled = True
-            update_job_cliente_from_result(job_id, cliente_id, sync_error_result(cliente, "Consulta cancelada antes de iniciar esta empresa.", inicio, fim), "CANCELADA")
+            update_job_cliente_from_result(job_id, cliente_id, sync_error_result(cliente, "Consulta cancelada antes de iniciar esta empresa.", inicio, fim, nsu_inicial=nsu_inicial, reiniciar_nsu=reiniciar_nsu, consulta_papel=consulta_papel), "CANCELADA")
             continue
 
         mark_job("EM_ANDAMENTO", f"Consultando {cliente.get('razao_social', '')}.", item)
-        update_job_cliente_from_result(job_id, cliente_id, {"status": "EM CONSULTA", "mensagens": ["Iniciando consulta da empresa."], "nsu_inicial": (1 if reiniciar_nsu else int(cliente.get("ultimo_nsu") or 0) + 1)}, "EM CONSULTA")
+        update_job_cliente_from_result(
+            job_id,
+            cliente_id,
+            {
+                "status": "EM CONSULTA",
+                "mensagens": ["Iniciando consulta da empresa."],
+                "nsu_inicial": resolve_nsu_start(cliente, reiniciar_nsu=reiniciar_nsu, nsu_inicial=nsu_inicial, consulta_papel=consulta_papel),
+                "consulta_papel": consulta_papel,
+                "consulta_papel_label": consulta_papel_label(consulta_papel),
+            },
+            "EM CONSULTA",
+        )
 
         if not cliente.get("certificado_id"):
             any_errors = True
-            result = sync_error_result(cliente, "Empresa sem certificado vinculado.", inicio, fim)
+            result = sync_error_result(cliente, "Empresa sem certificado vinculado.", inicio, fim, nsu_inicial=nsu_inicial, reiniciar_nsu=reiniciar_nsu, consulta_papel=consulta_papel)
             update_job_cliente_from_result(job_id, cliente_id, result, "SEM CERTIFICADO")
             continue
 
@@ -1097,6 +1233,8 @@ def run_sync_job(job_id: int) -> None:
             inicio=inicio,
             fim=fim,
             reiniciar_nsu=reiniciar_nsu,
+            nsu_inicial=nsu_inicial,
+            consulta_papel=consulta_papel,
             raise_on_error=False,
             cancel_checker=lambda jid=job_id: is_job_cancel_requested(jid),
             progress_callback=lambda res, cid=cliente_id: update_job_cliente_from_result(job_id, cid, res, res.get("status") or "EM CONSULTA"),
@@ -1109,7 +1247,7 @@ def run_sync_job(job_id: int) -> None:
         update_job_cliente_from_result(job_id, cliente_id, result, status if status else None)
 
     final_status = "CANCELADA" if canceled else "CONCLUIDA_COM_ERROS" if any_errors else "CONCLUIDA"
-    final_message = "Consulta cancelada pelo usuário." if canceled else "Consulta finalizada com erros em uma ou mais empresas." if any_errors else "Consulta finalizada com sucesso."
+    final_message = "Consulta cancelada pelo usuário." if canceled else "Consulta finalizada com erros em uma ou mais empresas." if any_errors else f"Consulta finalizada com sucesso · escopo: {consulta_papel_label(consulta_papel)}."
     mark_job(final_status, final_message, finished=True)
 
 
@@ -1668,10 +1806,12 @@ def sincronizar_page(
         f"<td><strong>{escape(c.get('razao_social',''))}</strong><br><span class='small muted'>{mask_cnpj(c.get('cnpj'))}</span></td>"
         f"<td>{pill('apta' if c.get('certificado_id') else 'sem certificado', 'ok' if c.get('certificado_id') else 'warn')}</td>"
         f"<td class='num'>{c.get('ultimo_nsu', 0)}</td>"
+        f"<td class='num'>{cliente_nsu_cursor(c, 'PRESTADOR')}</td>"
+        f"<td class='num'>{cliente_nsu_cursor(c, 'TOMADOR')}</td>"
         f"<td><a class='button ghost compact-btn' href='/relatorio?cliente_id={c.get('id')}&papel=TODOS'>Notas</a></td>"
         "</tr>"
         for c in sorted(clientes, key=lambda x: x.get("razao_social", ""))
-    ) or "<tr><td colspan='4'>Nenhuma empresa cadastrada.</td></tr>"
+    ) or "<tr><td colspan='6'>Nenhuma empresa cadastrada.</td></tr>"
 
     body = f"""
       {active_job_html}
@@ -1700,6 +1840,28 @@ def sincronizar_page(
               <div><span>Escopo</span><strong>{'selecionadas' if selected else 'todas as aptas'}</strong></div>
               <div><span>Limite 429</span><strong>pausa automática</strong></div>
             </div>
+            <div class="field-block">
+              <label>Tipo de nota para importar</label>
+              <p class="muted small">Use o escopo para reduzir processamento, armazenamento e conferência. O cursor de NSU é separado por escopo para não perder notas de outro papel.</p>
+              <div class="check-grid scope-grid">
+                <label class="check-card scope-card">
+                  <input type="radio" name="consulta_papel" value="TODOS" checked>
+                  <span class="check-dot"></span>
+                  <span><strong>Prestadas e tomadas</strong><em>Busca completa do movimento do CNPJ.</em></span>
+                </label>
+                <label class="check-card scope-card">
+                  <input type="radio" name="consulta_papel" value="PRESTADOR">
+                  <span class="check-dot"></span>
+                  <span><strong>Apenas prestadas</strong><em>Importa notas em que a empresa é prestadora.</em></span>
+                </label>
+                <label class="check-card scope-card">
+                  <input type="radio" name="consulta_papel" value="TOMADOR">
+                  <span class="check-dot"></span>
+                  <span><strong>Apenas tomadas</strong><em>Importa notas em que a empresa é tomadora.</em></span>
+                </label>
+              </div>
+            </div>
+
 
             <div class="field-block">
               <label>Empresas para consultar</label>
@@ -1710,10 +1872,11 @@ def sincronizar_page(
             <details class="advanced-box">
               <summary>Parâmetros avançados de NSU</summary>
               <div class="form-row three-cols">
+                <div><label>NSU inicial manual</label><input name="nsu_inicial" inputmode="numeric" placeholder="Ex.: 148900"><small class="muted">Opcional. Se preenchido, prevalece sobre o NSU gravado.</small></div>
                 <div><label>Máximo de NSUs por empresa</label><input name="max_consultas" value="500"></div>
                 <div><label>Parar após NSUs vazios</label><input name="parar_apos_vazios" value="3"></div>
-                <label class="switch-line"><input type="checkbox" name="reiniciar_nsu" value="1"><span>Reconsultar histórico desde o NSU 1</span></label>
               </div>
+              <label class="switch-line"><input type="checkbox" name="reiniciar_nsu" value="1"><span>Reconsultar histórico desde o NSU 1 apenas quando não houver NSU manual.</span></label>
               <div class="notice rate-limit-note">
                 <strong>Ritmo de consulta</strong>
                 <span>Intervalo: {settings.request_delay_seconds}s · pausa 429: {settings.rate_limit_pause_seconds}s · retentativas: {settings.max_rate_limit_retries}.</span>
@@ -1750,7 +1913,7 @@ def sincronizar_page(
           <div><span class="small-eyebrow">Prontidão</span><h2>Empresas disponíveis para consulta</h2></div>
           <span class="muted small">Certificado e último NSU antes da execução.</span>
         </div>
-        <div class="table-wrap"><table><thead><tr><th>Empresa</th><th>Status</th><th class="num">Último NSU</th><th>Atalho</th></tr></thead><tbody>{clientes_table}</tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Empresa</th><th>Status</th><th class="num">NSU geral</th><th class="num">NSU prestadas</th><th class="num">NSU tomadas</th><th>Atalho</th></tr></thead><tbody>{clientes_table}</tbody></table></div>
       </section>
     """
     return render_page("Busca de NFS-e", "sincronizar", body, subtitle="Execução operacional com controle de NSU, empresas e ritmo de consulta.")
@@ -1940,12 +2103,127 @@ def note_dict_from_parsed(cliente: dict[str, Any], parsed: ParsedNfse, origem: s
     return values
 
 
+TERMINAL_NOTE_STATUSES = {"CANCELADA", "SUBSTITUIDA"}
+
+
+def note_status_priority(status: Any) -> int:
+    normalized = str(status or "").upper()
+    if normalized == "CANCELADA":
+        return 3
+    if normalized == "SUBSTITUIDA":
+        return 2
+    if normalized == "AUTORIZADA":
+        return 1
+    return 0
+
+
+def preserve_stronger_status(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    """Evita que XML autorizado posterior reverta nota já cancelada/substituída."""
+    merged = dict(incoming)
+    existing_status = str(existing.get("status") or "").upper()
+    incoming_status = str(incoming.get("status") or "").upper()
+    if note_status_priority(existing_status) > note_status_priority(incoming_status):
+        merged["status"] = existing_status
+        for key in [
+            "status_atualizado_por_evento_em",
+            "status_evento_origem",
+            "status_evento_nsu",
+            "status_evento_label",
+            "status_evento_xml_path",
+            "status_evento_hash",
+        ]:
+            if existing.get(key) is not None:
+                merged[key] = existing.get(key)
+    return merged
+
+
+def apply_pending_event_statuses(data: dict[str, Any], note: dict[str, Any]) -> dict[str, Any]:
+    chave = str(note.get("chave_acesso") or "")
+    cnpj_cliente = digits(str(note.get("cnpj_cliente") or ""))
+    if not chave or not cnpj_cliente:
+        return note
+
+    updated = dict(note)
+    for event in data.get("eventos", []):
+        if str(event.get("chave_acesso") or "") != chave:
+            continue
+        if digits(str(event.get("cnpj_cliente") or "")) != cnpj_cliente:
+            continue
+        event_status = str(event.get("status_nota") or "").upper()
+        if event_status not in TERMINAL_NOTE_STATUSES:
+            continue
+        if note_status_priority(event_status) >= note_status_priority(updated.get("status")):
+            updated["status"] = event_status
+            updated["status_atualizado_por_evento_em"] = event.get("criado_em") or now_iso()
+            updated["status_evento_origem"] = event.get("origem")
+            updated["status_evento_nsu"] = event.get("nsu")
+            updated["status_evento_label"] = event.get("label_origem")
+            updated["status_evento_xml_path"] = event.get("xml_path")
+            updated["status_evento_hash"] = event.get("xml_hash")
+    return updated
+
+
+def register_event_status(
+    data: dict[str, Any],
+    cliente: dict[str, Any],
+    parsed: ParsedNfse,
+    origem: str,
+    nsu: int | None,
+    label: str | None,
+) -> int:
+    """Registra evento de cancelamento/substituição e aplica à nota existente."""
+    status = str(parsed.status or "").upper()
+    if status not in TERMINAL_NOTE_STATUSES or not parsed.chave_acesso:
+        return 0
+
+    cnpj_cliente = digits(cliente.get("cnpj"))
+    event = {
+        "id": f"{cnpj_cliente}:{parsed.chave_acesso}:{status}:{parsed.xml_hash}",
+        "cliente_id": cliente.get("id"),
+        "cnpj_cliente": cnpj_cliente,
+        "cliente_razao_social": cliente.get("razao_social"),
+        "chave_acesso": parsed.chave_acesso,
+        "status_nota": status,
+        "origem": origem,
+        "nsu": nsu,
+        "label_origem": label,
+        "xml_hash": parsed.xml_hash,
+        "xml_path": save_xml_file(cliente["cnpj"], parsed),
+        "criado_em": now_iso(),
+    }
+
+    eventos = data.setdefault("eventos", [])
+    if not any(existing.get("id") == event["id"] for existing in eventos):
+        eventos.append(event)
+        data["eventos"] = eventos[-1000:]
+
+    updated_count = 0
+    for note in data.setdefault("notas", []):
+        if str(note.get("chave_acesso") or "") != parsed.chave_acesso:
+            continue
+        if digits(str(note.get("cnpj_cliente") or "")) != cnpj_cliente:
+            continue
+        if note_status_priority(status) >= note_status_priority(note.get("status")):
+            note["status"] = status
+            note["status_atualizado_por_evento_em"] = event["criado_em"]
+            note["status_evento_origem"] = origem
+            note["status_evento_nsu"] = nsu
+            note["status_evento_label"] = label
+            note["status_evento_xml_path"] = event["xml_path"]
+            note["status_evento_hash"] = parsed.xml_hash
+            note["atualizado_em"] = now_iso()
+            updated_count += 1
+    return updated_count
+
+
 def upsert_note(data: dict[str, Any], note: dict[str, Any]) -> str:
+    note = apply_pending_event_statuses(data, note)
     notes = data.setdefault("notas", [])
     for index, existing in enumerate(notes):
         if existing.get("id") == note.get("id"):
             created = existing.get("criado_em") or now_iso()
-            merged = {**existing, **note, "criado_em": created, "atualizado_em": now_iso()}
+            incoming = {**existing, **note, "criado_em": created, "atualizado_em": now_iso()}
+            merged = preserve_stronger_status(existing, incoming)
             if merged != existing:
                 notes[index] = merged
                 return "atualizada"
@@ -1963,13 +2241,16 @@ def process_xml_items(
     nsu: int | None = None,
     inicio: date | None = None,
     fim: date | None = None,
+    consulta_papel: Any = "TODOS",
 ) -> dict[str, Any]:
+    consulta_papel = normalize_consulta_papel(consulta_papel)
     counts = {
         "notas_lidas": 0,
         "importadas": 0,
         "atualizadas": 0,
         "ignoradas": 0,
         "fora_periodo": 0,
+        "fora_escopo": 0,
         "mensagens": [],
     }
     for label, xml_bytes in xml_items:
@@ -1982,7 +2263,21 @@ def process_xml_items(
         for parsed in parsed_notes:
             note = note_dict_from_parsed(cliente, parsed, origem=origem, nsu=nsu, label=label)
             if note is None:
-                counts["ignoradas"] += 1
+                # Eventos nacionais não carregam necessariamente o papel da nota no
+                # XML do evento. Por segurança fiscal, eventos terminais continuam
+                # sendo aplicados a notas já existentes, mesmo em consulta filtrada.
+                event_updates = register_event_status(data, cliente, parsed, origem=origem, nsu=nsu, label=label)
+                if event_updates:
+                    counts["atualizadas"] += event_updates
+                    if len(counts["mensagens"]) < 8:
+                        counts["mensagens"].append(
+                            f"{label}: evento {parsed.status} aplicado à NFS-e {parsed.chave_acesso}."
+                        )
+                else:
+                    counts["ignoradas"] += 1
+                continue
+            if consulta_papel != "TODOS" and str(note.get("papel_cliente") or "").upper() != consulta_papel:
+                counts["fora_escopo"] += 1
                 continue
             note_date = parse_date_filter(str(note.get("competencia") or note.get("data_emissao") or ""))
             if inicio and note_date and note_date < inicio:
@@ -1998,6 +2293,10 @@ def process_xml_items(
                 counts["atualizadas"] += 1
             else:
                 counts["ignoradas"] += 1
+    if counts["fora_escopo"] and len(counts["mensagens"]) < 8:
+        counts["mensagens"].append(
+            f"{counts['fora_escopo']} documento(s) fora do escopo selecionado ({consulta_papel_label(consulta_papel)}) foram ignorados."
+        )
     return counts
 
 
@@ -2067,13 +2366,14 @@ def reprocess_saved_retencoes(data: dict[str, Any]) -> dict[str, Any]:
             continue
 
         updated_at = now_iso()
-        merged = {
+        refreshed = apply_pending_event_statuses(data, refreshed)
+        merged = preserve_stronger_status(existing, {
             **existing,
             **refreshed,
             "criado_em": existing.get("criado_em") or updated_at,
             "atualizado_em": updated_at,
             "reprocessado_em": updated_at,
-        }
+        })
         # Mantém rastreabilidade da origem original.
         if existing.get("origem"):
             merged["origem"] = existing.get("origem")
@@ -2121,6 +2421,8 @@ def ui_sincronizar_cliente(
     inicio: str | None = Form(default=None),
     fim: str | None = Form(default=None),
     reiniciar_nsu: str | None = Form(default=None),
+    nsu_inicial: str | None = Form(default=None),
+    consulta_papel: str = Form(default="TODOS"),
 ) -> RedirectResponse:
     data = store.read()
     active = latest_active_job(data)
@@ -2131,12 +2433,31 @@ def ui_sincronizar_cliente(
         raise HTTPException(status_code=404, detail="Empresa não encontrada.")
     inicio_d = parse_date_filter(inicio)
     fim_d = parse_date_filter(fim)
-    job = create_sync_job([cliente], inicio_d, fim_d, max_consultas, parar_apos_vazios, bool(reiniciar_nsu), [cliente_id])
+    job = create_sync_job(
+        [cliente],
+        inicio_d,
+        fim_d,
+        max_consultas,
+        parar_apos_vazios,
+        bool(reiniciar_nsu),
+        [cliente_id],
+        parse_optional_positive_int(nsu_inicial),
+        normalize_consulta_papel(consulta_papel),
+    )
     background_tasks.add_task(run_sync_job, int(job["id"]))
     return RedirectResponse(f"/sincronizacao/progresso/{job['id']}", status_code=303)
 
 
-def sync_error_result(cliente: dict[str, Any], message: str, inicio: date | None, fim: date | None) -> dict[str, Any]:
+def sync_error_result(
+    cliente: dict[str, Any],
+    message: str,
+    inicio: date | None,
+    fim: date | None,
+    nsu_inicial: int | None = None,
+    reiniciar_nsu: bool = False,
+    consulta_papel: Any = "TODOS",
+) -> dict[str, Any]:
+    consulta_papel = normalize_consulta_papel(consulta_papel)
     return {
         "id": None,
         "cliente_id": cliente.get("id"),
@@ -2146,14 +2467,17 @@ def sync_error_result(cliente: dict[str, Any], message: str, inicio: date | None
         "status": "ERRO",
         "periodo_inicio": inicio.isoformat() if inicio else None,
         "periodo_fim": fim.isoformat() if fim else None,
-        "nsu_inicial": int(cliente.get("ultimo_nsu") or 0) + 1,
-        "ultimo_nsu_processado": int(cliente.get("ultimo_nsu") or 0),
+        "consulta_papel": consulta_papel,
+        "consulta_papel_label": consulta_papel_label(consulta_papel),
+        "nsu_inicial": resolve_nsu_start(cliente, reiniciar_nsu=reiniciar_nsu, nsu_inicial=nsu_inicial, consulta_papel=consulta_papel),
+        "ultimo_nsu_processado": cliente_nsu_cursor(cliente, consulta_papel),
         "consultas_realizadas": 0,
         "documentos_recebidos": 0,
         "importadas": 0,
         "atualizadas": 0,
         "ignoradas": 0,
         "fora_periodo": 0,
+        "fora_escopo": 0,
         "mensagens": [message],
         "erro": message,
         "criado_em": now_iso(),
@@ -2170,6 +2494,8 @@ def ui_sincronizar_todos(
     fim: str | None = Form(default=None),
     cliente_ids: list[int] | None = Form(default=None),
     reiniciar_nsu: str | None = Form(default=None),
+    nsu_inicial: str | None = Form(default=None),
+    consulta_papel: str = Form(default="TODOS"),
 ) -> RedirectResponse:
     data = store.read()
     active = latest_active_job(data)
@@ -2179,7 +2505,17 @@ def ui_sincronizar_todos(
     inicio_d = parse_date_filter(inicio)
     fim_d = parse_date_filter(fim)
     clientes = [c for c in data.get("clientes", []) if c.get("ativo", True) and (not selected_ids or int(c.get("id")) in selected_ids)]
-    job = create_sync_job(clientes, inicio_d, fim_d, max_consultas, parar_apos_vazios, bool(reiniciar_nsu), list(selected_ids))
+    job = create_sync_job(
+        clientes,
+        inicio_d,
+        fim_d,
+        max_consultas,
+        parar_apos_vazios,
+        bool(reiniciar_nsu),
+        list(selected_ids),
+        parse_optional_positive_int(nsu_inicial),
+        normalize_consulta_papel(consulta_papel),
+    )
     background_tasks.add_task(run_sync_job, int(job["id"]))
     return RedirectResponse(f"/sincronizacao/progresso/{job['id']}", status_code=303)
 
@@ -2191,11 +2527,14 @@ def sincronizar_cliente(
     inicio: date | None = None,
     fim: date | None = None,
     reiniciar_nsu: bool = False,
+    nsu_inicial: int | None = None,
+    consulta_papel: Any = "TODOS",
     raise_on_error: bool = True,
     cancel_checker: Callable[[], bool] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
+    consulta_papel = normalize_consulta_papel(consulta_papel)
     data = store.read()
     cliente = find_by_id(data.get("clientes", []), cliente_id)
     if not cliente:
@@ -2204,9 +2543,9 @@ def sincronizar_cliente(
     if not certificado or not certificado.get("ativo", True):
         if raise_on_error:
             raise HTTPException(status_code=400, detail="Cliente sem certificado ativo vinculado.")
-        return sync_error_result(cliente, "Cliente sem certificado ativo vinculado.", inicio, fim)
+        return sync_error_result(cliente, "Cliente sem certificado ativo vinculado.", inicio, fim, nsu_inicial=nsu_inicial, reiniciar_nsu=reiniciar_nsu, consulta_papel=consulta_papel)
 
-    nsu_start = 1 if reiniciar_nsu else int(cliente.get("ultimo_nsu") or 0) + 1
+    nsu_start = resolve_nsu_start(cliente, reiniciar_nsu=reiniciar_nsu, nsu_inicial=nsu_inicial, consulta_papel=consulta_papel)
     log = {
         "id": JsonStore.next_id(data, "log"),
         "cliente_id": cliente["id"],
@@ -2216,15 +2555,18 @@ def sincronizar_cliente(
         "status": "INICIADA",
         "periodo_inicio": inicio.isoformat() if inicio else None,
         "periodo_fim": fim.isoformat() if fim else None,
+        "consulta_papel": consulta_papel,
+        "consulta_papel_label": consulta_papel_label(consulta_papel),
         "reiniciar_nsu": bool(reiniciar_nsu),
         "nsu_inicial": nsu_start,
-        "ultimo_nsu_processado": int(cliente.get("ultimo_nsu") or 0),
+        "ultimo_nsu_processado": cliente_nsu_cursor(cliente, consulta_papel),
         "consultas_realizadas": 0,
         "documentos_recebidos": 0,
         "importadas": 0,
         "atualizadas": 0,
         "ignoradas": 0,
         "fora_periodo": 0,
+        "fora_escopo": 0,
         "mensagens": [],
         "criado_em": now_iso(),
         "finalizado_em": None,
@@ -2234,7 +2576,7 @@ def sincronizar_cliente(
 
     result = dict(log)
     if progress_callback:
-        progress_callback({**result, "status": "EM CONSULTA", "mensagens": ["Preparando certificado e conexão com o ADN."]})
+        progress_callback({**result, "status": "EM CONSULTA", "mensagens": [f"Preparando certificado e conexão com o ADN · escopo: {consulta_papel_label(consulta_papel)}."]})
     try:
         senha = decrypt_secret(certificado.get("senha_criptografada"))
         client = AdnClient(settings.nfse_adn_base_url, certificado["caminho_arquivo"], senha, timeout=settings.request_timeout_seconds)
@@ -2366,13 +2708,14 @@ def sincronizar_cliente(
         result["documentos_recebidos"] += len(xmls)
         data = store.read()
         cliente = find_by_id(data.get("clientes", []), cliente_id) or cliente
-        counts = process_xml_items(data, cliente, xmls, origem="ADN_API", nsu=nsu, inicio=inicio, fim=fim)
+        counts = process_xml_items(data, cliente, xmls, origem="ADN_API", nsu=nsu, inicio=inicio, fim=fim, consulta_papel=consulta_papel)
         result["importadas"] += int(counts.get("importadas", 0))
         result["atualizadas"] += int(counts.get("atualizadas", 0))
         result["ignoradas"] += int(counts.get("ignoradas", 0))
         result["fora_periodo"] += int(counts.get("fora_periodo", 0))
+        result["fora_escopo"] += int(counts.get("fora_escopo", 0))
         result["mensagens"].extend(counts.get("mensagens", [])[:8])
-        cliente["ultimo_nsu"] = max(int(cliente.get("ultimo_nsu") or 0), nsu)
+        advance_cliente_nsu(cliente, nsu, consulta_papel)
         cliente["ultima_sincronizacao_em"] = now_iso()
         store.write(data)
         if progress_callback:
@@ -2411,6 +2754,7 @@ def render_sync_results(results: list[dict[str, Any]], title: str) -> str:
             "<tr>"
             f"<td>{mask_cnpj(r.get('cnpj_cliente'))}</td>"
             f"<td>{escape(periodo)}</td>"
+            f"<td>{escape(consulta_papel_label(r.get('consulta_papel')))}</td>"
             f"<td>{pill(r.get('status',''), 'ok' if r.get('status') == 'CONCLUIDA' else 'err')}</td>"
             f"<td class='num'>{r.get('nsu_inicial')}</td>"
             f"<td class='num'>{r.get('ultimo_nsu_processado')}</td>"
@@ -2419,11 +2763,12 @@ def render_sync_results(results: list[dict[str, Any]], title: str) -> str:
             f"<td class='num'>{r.get('importadas')}</td>"
             f"<td class='num'>{r.get('atualizadas')}</td>"
             f"<td class='num'>{r.get('fora_periodo', 0)}</td>"
+            f"<td class='num'>{r.get('fora_escopo', 0)}</td>"
             f"<td class='num'>{r.get('ignoradas')}</td>"
             f"<td>{msgs}</td>"
             "</tr>"
         )
-    body = "".join(rows) or "<tr><td colspan='12'>Nenhum cliente sincronizado.</td></tr>"
+    body = "".join(rows) or "<tr><td colspan='14'>Nenhum cliente sincronizado.</td></tr>"
     html = f"""
       <section class="card">
         <h2>{escape(title)}</h2>
@@ -2431,7 +2776,7 @@ def render_sync_results(results: list[dict[str, Any]], title: str) -> str:
         <div class="actions" style="margin-top:14px"><a class="button ghost" href="/sincronizar">Nova busca</a><a class="button blue" href="/retencoes">Resumo por empresa</a><a class="button ghost" href="/relatorio">Notas detalhadas</a></div>
       </section>
       <div class="section-title"><h2>Resultado</h2></div>
-      <div class="table-wrap"><table><thead><tr><th>CNPJ</th><th>Período</th><th>Status</th><th class="num">NSU inicial</th><th class="num">Último</th><th class="num">Consultas</th><th class="num">Docs</th><th class="num">Importadas</th><th class="num">Atualizadas</th><th class="num">Fora período</th><th class="num">Ignoradas</th><th>Mensagens</th></tr></thead><tbody>{body}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>CNPJ</th><th>Período</th><th>Escopo</th><th>Status</th><th class="num">NSU inicial</th><th class="num">Último</th><th class="num">Consultas</th><th class="num">Docs</th><th class="num">Importadas</th><th class="num">Atualizadas</th><th class="num">Fora período</th><th class="num">Fora escopo</th><th class="num">Ignoradas</th><th>Mensagens</th></tr></thead><tbody>{body}</tbody></table></div>
     """
     return render_page(title, "sincronizar", html)
 
@@ -2470,6 +2815,7 @@ def sync_progress_page(job_id: int) -> str:
     progress = job_progress_percent(job)
     totals = job.get("totais", {})
     periodo = periodo_label(job.get("periodo_inicio"), job.get("periodo_fim"))
+    escopo_consulta = consulta_papel_label((job.get("parametros") or {}).get("consulta_papel") or job.get("consulta_papel"))
     current = job.get("empresa_atual") or {}
 
     rate_limit_seen = any(
@@ -2530,12 +2876,13 @@ def sync_progress_page(job_id: int) -> str:
             f"<td class='num'>{item.get('importadas', 0)}</td>"
             f"<td class='num'>{item.get('atualizadas', 0)}</td>"
             f"<td class='num'>{item.get('fora_periodo', 0)}</td>"
+            f"<td class='num'>{item.get('fora_escopo', 0)}</td>"
             f"<td>{'<br>'.join(escape(m) for m in display_msgs) or '-'}</td>"
             "</tr>"
         )
 
     card_grid = "".join(company_cards) or "<article class='progress-company-card'><strong>Nenhuma empresa na busca.</strong></article>"
-    body_rows = "".join(table_rows) or "<tr><td colspan='10'>Nenhuma empresa na consulta.</td></tr>"
+    body_rows = "".join(table_rows) or "<tr><td colspan='11'>Nenhuma empresa na consulta.</td></tr>"
 
     stop_button = ""
     auto_refresh = ""
@@ -2554,7 +2901,7 @@ def sync_progress_page(job_id: int) -> str:
           <div>
             <span class="small-eyebrow">Monitor de execução</span>
             <h2>{escape(str(job.get('mensagem_atual') or 'Acompanhamento da busca'))}</h2>
-            <p class="muted small">Período: <strong>{escape(periodo)}</strong> · Empresas: <strong>{job.get('total_empresas', 0)}</strong> · Atualização automática enquanto ativo.</p>
+            <p class="muted small">Período: <strong>{escape(periodo)}</strong> · Escopo: <strong>{escape(escopo_consulta)}</strong> · Empresas: <strong>{job.get('total_empresas', 0)}</strong> · Atualização automática enquanto ativo.</p>
           </div>
           <div class="operation-actions">
             {pill(job.get('status',''), sync_status_kind(job.get('status')))}
@@ -2570,6 +2917,7 @@ def sync_progress_page(job_id: int) -> str:
         <div class="card metric blue"><span class="metric-label">Consultas</span><strong class="metric-value">{totals.get('consultas_realizadas', 0)}</strong><span class="metric-detail">requisições ao Portal Nacional</span></div>
         <div class="card metric accent"><span class="metric-label">Documentos</span><strong class="metric-value">{totals.get('documentos_recebidos', 0)}</strong><span class="metric-detail">XMLs/documentos retornados</span></div>
         <div class="card metric"><span class="metric-label">Notas novas</span><strong class="metric-value">{totals.get('importadas', 0)}</strong><span class="metric-detail">gravadas na base do sistema</span></div>
+        <div class="card metric"><span class="metric-label">Fora escopo</span><strong class="metric-value">{totals.get('fora_escopo', 0)}</strong><span class="metric-detail">ignoradas pelo tipo selecionado</span></div>
         <div class="card metric dark"><span class="metric-label">Pendências</span><strong class="metric-value">{job.get('empresas_com_erro', 0)}</strong><span class="metric-detail">empresas com alerta</span></div>
       </div>
 
@@ -2583,7 +2931,7 @@ def sync_progress_page(job_id: int) -> str:
 
       <details class="advanced-box">
         <summary>Detalhes técnicos de NSU e mensagens</summary>
-        <div class="table-wrap"><table><thead><tr><th>Empresa</th><th>Status</th><th class="num">NSU inicial</th><th class="num">Último NSU</th><th class="num">Consultas</th><th class="num">Docs</th><th class="num">Importadas</th><th class="num">Atualizadas</th><th class="num">Fora período</th><th>Últimas mensagens</th></tr></thead><tbody>{body_rows}</tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Empresa</th><th>Status</th><th class="num">NSU inicial</th><th class="num">Último NSU</th><th class="num">Consultas</th><th class="num">Docs</th><th class="num">Importadas</th><th class="num">Atualizadas</th><th class="num">Fora período</th><th class="num">Fora escopo</th><th>Últimas mensagens</th></tr></thead><tbody>{body_rows}</tbody></table></div>
       </details>
       {auto_refresh}
     """

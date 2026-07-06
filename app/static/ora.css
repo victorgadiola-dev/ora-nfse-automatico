@@ -1141,3 +1141,15 @@ tfoot td {
     border-radius: 22px;
   }
 }
+
+.scope-grid {
+  max-height: none;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+.scope-card {
+  border-color: rgba(0,130,203,.12);
+}
+.scope-card:has(input:checked) {
+  border-color: rgba(0,130,203,.42);
+  box-shadow: 0 10px 24px rgba(1,30,65,.06);
+}

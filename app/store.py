@@ -35,7 +35,7 @@ class JsonStore:
     @staticmethod
     def default_data() -> dict[str, Any]:
         return {
-            "schema_version": 9,
+            "schema_version": 10,
             "created_at": utc_now_iso(),
             "updated_at": utc_now_iso(),
             "seq": {"cliente": 0, "certificado": 0, "log": 0, "job": 0},
@@ -88,11 +88,11 @@ class JsonStore:
                 data[key] = value
                 changed = True
         try:
-            if int(data.get("schema_version") or 0) < 9:
-                data["schema_version"] = 9
+            if int(data.get("schema_version") or 0) < 10:
+                data["schema_version"] = 10
                 changed = True
         except (TypeError, ValueError):
-            data["schema_version"] = 9
+            data["schema_version"] = 10
             changed = True
         data.setdefault("seq", {})
         for name in ["cliente", "certificado", "log", "job"]:

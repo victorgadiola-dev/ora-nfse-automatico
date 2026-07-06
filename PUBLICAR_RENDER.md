@@ -1,4 +1,4 @@
-# Publicar no Render — ORA NFS-e Automático v15
+# Publicar no Render — ORA NFS-e Automático v16
 
 Use este caminho para publicar o sistema como aplicação web real, sem GitHub Pages e sem agente local.
 
@@ -9,7 +9,7 @@ Copie esta versão para a pasta do repositório `ora-nfse-automatico`.
 No GitHub Desktop:
 
 1. confira os arquivos em **Changes**;
-2. use o commit `Prepara sistema para operação online no Render`;
+2. use o commit `Prepara v16 com NSU configurável, status fiscal e CSRF`;
 3. clique em **Commit to main**;
 4. clique em **Push origin**.
 
@@ -103,3 +103,14 @@ Depois disso, o sistema opera todo pelo link do Render:
 - histórico.
 
 Não use mais GitHub Pages para abrir o sistema.
+
+
+## v17 — Consulta por tipo de nota
+
+Na tela **Busca**, escolha o escopo operacional antes de iniciar a rotina:
+
+- **Prestadas e tomadas**
+- **Apenas prestadas**
+- **Apenas tomadas**
+
+O sistema mantém cursores de NSU separados para a consulta completa, prestadas e tomadas. Isso permite alternar rotinas sem perder notas do outro papel.

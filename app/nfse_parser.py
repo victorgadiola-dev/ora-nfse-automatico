@@ -319,32 +319,76 @@ def find_text_in_context(element: etree._Element, context_names: set[str], field
     return None
 
 
+CANCEL_EVENT_CODES = {"101101", "101103", "101104", "110111"}
+SUBSTITUTION_EVENT_CODES = {"105102", "105104", "105105", "110112"}
+
+
+def _event_code_from_node_name(name: str) -> str | None:
+    normalized = norm_name(name)
+    match = re.fullmatch(r"e(\d{6})", normalized)
+    if match:
+        return match.group(1)
+    return None
+
+
 def detect_status(element: etree._Element) -> str:
+    """Detecta situação fiscal da NFS-e ou de evento vinculado.
+
+    Além de tags municipais clássicas, reconhece eventos do padrão nacional:
+    e101101 = cancelamento e e105102 = cancelamento por substituição.
+    Eventos chegam muitas vezes separados da NFS-e autorizada; por isso o
+    parser precisa classificá-los corretamente para que a aplicação atualize
+    a nota existente em vez de deixá-la como AUTORIZADA.
+    """
     names = {norm_name(local_name(child)) for child in element.iter()}
+    raw_names = [local_name(child) for child in element.iter()]
     text = all_text(element).lower()
+
+    event_codes = {
+        code
+        for name in raw_names
+        if (code := _event_code_from_node_name(name))
+    }
+    for value in find_all_texts(element, ["tpEvento", "cEvento", "TipoEvento", "CodigoEvento", "CodigoTipoEvento"]):
+        code = re.sub(r"\D", "", value or "")
+        if len(code) >= 6:
+            event_codes.add(code[:6])
+
+    if event_codes.intersection(SUBSTITUTION_EVENT_CODES):
+        return "SUBSTITUIDA"
+    if event_codes.intersection(CANCEL_EVENT_CODES):
+        return "CANCELADA"
 
     cancel_markers = {
         "cancelamento",
+        "cancelarnfse",
         "nfsecancelamento",
         "nfsecancelada",
         "pedidocancelamento",
         "infpedidocancelamento",
-        "eventoCancelamento".lower(),
+        "eventocancelamento",
+        "cancelamentonfse",
+        "cancelamentodenfse",
     }
     if names.intersection({norm_name(name) for name in cancel_markers}) or "cancelad" in text:
+        if "substitu" in text:
+            return "SUBSTITUIDA"
         return "CANCELADA"
 
-    substitution_markers = {"substituicao", "nfsesubstituidora", "nfsesubstituida"}
+    substitution_markers = {"substituicao", "substituição", "nfsesubstituidora", "nfsesubstituida", "substituicaonfse"}
     if names.intersection({norm_name(name) for name in substitution_markers}) or "substitu" in text:
         return "SUBSTITUIDA"
 
-    cstat = find_first_text(element, ["cStat", "CodigoStatus", "Status", "sit", "situacao"])
+    cstat = find_first_text(element, ["cStat", "CodigoStatus", "Status", "sit", "situacao", "SituacaoNfse", "Situacao"])
     if cstat:
         lower = cstat.strip().lower()
-        if lower in {"cancelada", "cancelado", "2", "101", "135"}:
+        code = re.sub(r"\D", "", lower)
+        if lower in {"cancelada", "cancelado", "cancelamento"} or code in {"2", "99", "101", "135"}:
             return "CANCELADA"
-        if lower in {"substituida", "substituída"}:
+        if lower in {"substituida", "substituída"} or code in {"102"}:
             return "SUBSTITUIDA"
+        if lower in {"autorizada", "autorizado", "normal", "ativa"} or code in {"100"}:
+            return "AUTORIZADA"
     return "AUTORIZADA"
 
 
@@ -482,6 +526,22 @@ def split_social_retention(total: Decimal, retained_fields: set[str]) -> dict[st
     return result
 
 
+def complete_csrf_from_csll_only(pis: Decimal, cofins: Decimal, csll: Decimal) -> tuple[Decimal, Decimal, Decimal, bool]:
+    """Completa PIS e COFINS quando o XML trouxe somente CSLL do CSRF.
+
+    Em conferência operacional, quando a nota indica retenção social e apenas a
+    CSLL foi materializada no XML, a ORA precisa enxergar o bloco CSRF completo.
+    Como a CSLL representa 1% na composição padrão, PIS e COFINS são inferidos
+    pela proporção legal: 0,65% e 3%, respectivamente.
+    """
+    if csll <= ZERO or pis > ZERO or cofins > ZERO:
+        return pis, cofins, csll, False
+
+    inferred_pis = (csll * Decimal("0.65")).quantize(Decimal("0.01"))
+    inferred_cofins = (csll * Decimal("3.00")).quantize(Decimal("0.01"))
+    return inferred_pis, inferred_cofins, csll, True
+
+
 def parse_social_retencoes(element: etree._Element) -> tuple[Decimal, Decimal, Decimal, str | None, Decimal, str | None, Decimal, Decimal]:
     """Retorna PIS, COFINS e CSLL retidos, além da base de cálculo/apuração.
 
@@ -511,8 +571,11 @@ def parse_social_retencoes(element: etree._Element) -> tuple[Decimal, Decimal, D
     ]) or ZERO
 
     if explicit_pis > ZERO or explicit_cofins > ZERO or explicit_csll > ZERO:
+        pis, cofins, csll, completed = complete_csrf_from_csll_only(explicit_pis, explicit_cofins, explicit_csll)
         criterio = "retenções explícitas por tributo"
-        return explicit_pis, explicit_cofins, explicit_csll, tp_ret, aggregate, criterio, valor_pis_apurado, valor_cofins_apurado
+        if completed:
+            criterio = "retenção explícita apenas de CSLL; PIS/COFINS inferidos pela proporção CSRF"
+        return pis, cofins, csll, tp_ret, aggregate, criterio, valor_pis_apurado, valor_cofins_apurado
 
     if tp_ret in {"0", "2"}:
         criterio = f"tpRetPisCofins={tp_ret}: contribuições sociais não retidas"
@@ -521,8 +584,13 @@ def parse_social_retencoes(element: etree._Element) -> tuple[Decimal, Decimal, D
     if tp_ret in TP_RET_PIS_COFINS_MAP and aggregate > ZERO:
         retained_fields = TP_RET_PIS_COFINS_MAP[tp_ret]
         split = split_social_retention(aggregate, retained_fields)
+        pis, cofins, csll, completed = complete_csrf_from_csll_only(
+            split["valor_pis"], split["valor_cofins"], split["valor_csll"]
+        )
         criterio = f"vRetCSLL segregado por tpRetPisCofins={tp_ret}"
-        return split["valor_pis"], split["valor_cofins"], split["valor_csll"], tp_ret, aggregate, criterio, valor_pis_apurado, valor_cofins_apurado
+        if completed:
+            criterio = f"tpRetPisCofins={tp_ret}: CSLL no XML; PIS/COFINS inferidos pela proporção CSRF"
+        return pis, cofins, csll, tp_ret, aggregate, criterio, valor_pis_apurado, valor_cofins_apurado
 
 
     # Fallback para XMLs municipais/legados fora do padrão nacional atual, nos
@@ -530,8 +598,11 @@ def parse_social_retencoes(element: etree._Element) -> tuple[Decimal, Decimal, D
     legacy_pis = dec(element, ["ValorPis", "ValorPIS", "PIS"])
     legacy_cofins = dec(element, ["ValorCofins", "ValorCOFINS", "COFINS"])
     legacy_csll = dec(element, ["ValorCsll", "ValorCSLL", "CSLL"])
+    pis, cofins, csll, completed = complete_csrf_from_csll_only(legacy_pis, legacy_cofins, legacy_csll)
     criterio = "fallback legado: tags municipais de retenção"
-    return legacy_pis, legacy_cofins, legacy_csll, tp_ret, aggregate, criterio, valor_pis_apurado, valor_cofins_apurado
+    if completed:
+        criterio = "fallback legado: CSLL isolada; PIS/COFINS inferidos pela proporção CSRF"
+    return pis, cofins, csll, tp_ret, aggregate, criterio, valor_pis_apurado, valor_cofins_apurado
 
 
 def dec(element: etree._Element, names: Iterable[str], default: Decimal = ZERO) -> Decimal:

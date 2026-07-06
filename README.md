@@ -1,5 +1,34 @@
 # ORA NFS-e Automático
 
+## Versão v17 — seleção de notas prestadas/tomadas na consulta
+
+Esta atualização adiciona um controle operacional na tela **Busca** para escolher o tipo de nota a importar:
+
+- **Prestadas e tomadas:** comportamento completo, importando todo o movimento retornado para o CNPJ.
+- **Apenas prestadas:** importa somente NFS-e em que a empresa consultada aparece como prestadora.
+- **Apenas tomadas:** importa somente NFS-e em que a empresa consultada aparece como tomadora.
+
+Para evitar perda de histórico, o sistema mantém **cursores de NSU separados por escopo**:
+
+```text
+ultimo_nsu           → consulta completa
+ultimo_nsu_prestador → consulta apenas prestadas
+ultimo_nsu_tomador   → consulta apenas tomadas
+```
+
+Assim, uma rotina feita apenas para notas tomadas não avança automaticamente o cursor de notas prestadas, e vice-versa. Se houver necessidade de recomeçar de um ponto específico, o campo **NSU inicial manual** continua prevalecendo sobre todos os cursores.
+
+Observação operacional: o Portal Nacional/ADN continua sendo consultado por NSU. O filtro de prestadas/tomadas é aplicado imediatamente após a leitura do XML, reduzindo gravação, processamento, relatórios e conferência da base.
+
+
+## Versão v16 — operação online pelo Render com NSU configurável, status fiscal e CSRF
+
+Esta atualização adiciona três correções operacionais importantes:
+
+- **CSRF com CSLL isolada:** quando o XML trouxer apenas CSLL dentro do bloco de retenções sociais, o sistema passa a calcular PIS e COFINS retidos pela proporção padrão do CSRF, mantendo o critério aplicado em cada nota.
+- **Status de notas canceladas/substituídas:** eventos nacionais de cancelamento passam a atualizar a nota já importada; além disso, uma nota já marcada como cancelada ou substituída não volta para autorizada por reprocessamento posterior de XML autorizado.
+- **NSU inicial configurável:** a tela **Busca** agora permite informar um NSU inicial manual. Se preenchido, ele prevalece sobre o último NSU gravado e evita reconsultas longas desde o início.
+
 ## Versão v15 — operação online pelo Render
 
 Esta versão foi reconstruída para rodar como **aplicação web publicada no Render**, sem depender de agente local, GitHub Pages ou execução em `127.0.0.1`.

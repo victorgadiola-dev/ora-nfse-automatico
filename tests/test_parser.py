@@ -73,7 +73,7 @@ def test_parse_tp_ret_pis_cofins_csll_dominios_principais():
         "5": ("65.00", 65, 0, 0),
         "6": ("300.00", 0, 300, 0),
         "7": ("400.00", 0, 300, 100),
-        "8": ("100.00", 0, 0, 100),
+        "8": ("100.00", 65, 300, 100),
         "9": ("165.00", 65, 0, 100),
     }
     for tp_ret, (vret, pis, cofins, csll) in cenarios.items():
@@ -84,3 +84,44 @@ def test_parse_tp_ret_pis_cofins_csll_dominios_principais():
         assert nota.valor_csll == csll
         assert nota.valor_pis_apurado == 165
         assert nota.valor_cofins_apurado == 760
+
+
+def test_csll_isolada_completa_pis_cofins_do_csrf():
+    xml = """
+    <NFSe>
+      <infNFSe>
+        <nNFSe>991</nNFSe>
+        <dhEmi>2026-03-10T10:00:00</dhEmi>
+        <prest><CNPJ>12345678000195</CNPJ><xNome>Prestador Teste</xNome></prest>
+        <toma><CNPJ>11111111000191</CNPJ><xNome>Tomador Teste</xNome></toma>
+        <valores>
+          <vServ>10000.00</vServ>
+          <ValorCSLLRetido>100.00</ValorCSLLRetido>
+        </valores>
+      </infNFSe>
+    </NFSe>
+    """.encode()
+    nota = parse_nfses_from_xml_bytes(xml)[0]
+    assert nota.valor_pis == 65
+    assert nota.valor_cofins == 300
+    assert nota.valor_csll == 100
+    assert "CSLL" in (nota.retencao_pis_cofins_csll_criterio or "")
+
+
+def test_evento_cancelamento_nacional_marca_status_cancelada():
+    xml = """
+    <evento versao="1.00">
+      <infEvento Id="EVT12345678901234567890123456789012345678901234567890101101001">
+        <chNFSe>12345678901234567890123456789012345678901234567890</chNFSe>
+        <dhEvento>2026-03-10T10:00:00-03:00</dhEvento>
+        <e101101>
+          <xDesc>Cancelamento de NFS-e</xDesc>
+          <cMotivo>2</cMotivo>
+          <xMotivo>Serviço não prestado</xMotivo>
+        </e101101>
+      </infEvento>
+    </evento>
+    """.encode()
+    nota = parse_nfses_from_xml_bytes(xml)[0]
+    assert nota.chave_acesso == "12345678901234567890123456789012345678901234567890"
+    assert nota.status == "CANCELADA"

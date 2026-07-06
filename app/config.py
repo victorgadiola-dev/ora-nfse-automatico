@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_name: str = "ORA NFS-e Automático"
-    app_version: str = "0.15.0"
+    app_version: str = "0.16.0"
     app_env: str = "auto"
 
     # Autenticação simples para publicação em URL pública.
